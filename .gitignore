@@ -9,3 +9,6 @@ tmp/
 # Output files
 json/*.json
 png/*.png
+
+# Copilot's verbose documentation files
+docs/*
