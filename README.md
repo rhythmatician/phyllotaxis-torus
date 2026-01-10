@@ -49,7 +49,23 @@ Generate a complex multi-scale network:
 python torus_net_gpu.py --steps 1 13 21 34 55 --out multi_scale.png
 ```
 
-### Command-Line Arguments
+Outputs will be organized by file type:
+- `png/fibonacci.png` — the rendered image
+- `json/fibonacci.json` — scene metadata and parameters
+
+## File Organization
+
+Outputs are automatically organized by type:
+- **PNG images** → `png/` folder
+- **JSON metadata** → `json/` folder
+
+Each render produces a matching pair:
+- `png/your_image.png` — the rendered visualization
+- `json/your_image.json` — complete scene configuration (geometry, camera, rendering params, step sizes)
+
+This makes it easy to reproduce renders or tweak existing ones!
+
+## Command-Line Arguments
 
 #### Required
 - `--steps`: Space-separated list of step sizes (e.g., `13 21`)

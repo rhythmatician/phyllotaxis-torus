@@ -18,8 +18,10 @@ Examples:
 """
 
 import argparse
+import json
 import math
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -370,6 +372,16 @@ def render(scene: Scene, steps: list[int], out_path: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[device] {device} (cuda_available={torch.cuda.is_available()})")
 
+    # Organize outputs by file type
+    out_path = Path(out_path)
+    png_dir = Path("png")
+    json_dir = Path("json")
+    png_dir.mkdir(exist_ok=True)
+    json_dir.mkdir(exist_ok=True)
+    
+    png_path = png_dir / out_path.name
+    json_path = json_dir / out_path.with_suffix(".json").name
+
     cam_np, right_np, up_np, forward_np = build_camera(scene)
 
     C = torch.tensor(cam_np, device=device, dtype=torch.float32)
@@ -463,8 +475,17 @@ def render(scene: Scene, steps: list[int], out_path: str):
     )
 
     img_cpu = img.clamp(0.0, 1.0).detach().cpu().numpy()
-    plt.imsave(out_path, img_cpu)
-    print(f"[saved] {out_path}")
+    plt.imsave(png_path, img_cpu)
+    print(f"[saved] {png_path}")
+
+    # Save scene metadata as JSON
+    metadata = {
+        "steps": steps,
+        "scene": asdict(scene),
+    }
+    with open(json_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"[saved] {json_path}")
 
 
 def parse_args():
