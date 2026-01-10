@@ -478,6 +478,7 @@ def parse_args():
     ap.add_argument("--f", type=float, default=1.2)
     ap.add_argument("--t_step", type=float, default=0.40)
 
+    ap.add_argument("--cmap", type=str, default="magma", help="Matplotlib colormap name (e.g., magma, inferno, viridis, plasma)")
     ap.add_argument("--dot_px", type=int, default=4)
     ap.add_argument("--line_px", type=int, default=1)
     ap.add_argument("--line_alpha", type=float, default=0.40)
@@ -495,6 +496,7 @@ if __name__ == "__main__":
         H=args.H,
         f=args.f,
         t_step=args.t_step,
+        cmap_name=args.cmap,
         dot_radius_px=args.dot_px,
         line_radius_px=args.line_px,
         line_alpha=args.line_alpha,
