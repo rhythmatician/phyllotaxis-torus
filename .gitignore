@@ -1,7 +1,11 @@
-*.png
+# Byte-compiled / optimized / DLL files
 *.pyc
 
 # Temporary files
 temp.*
 tmp*
 tmp/
+
+# Output files
+json/*.json
+png/*.png
