@@ -77,7 +77,7 @@ def pingpong01(t: torch.Tensor) -> torch.Tensor:
     return 1.0 - torch.abs(2.0 * t - 1.0)
 
 
-def build_lut(device, cmap_name="magma", n=256) -> torch.Tensor:
+def build_lut(device, cmap_name="gnuplot", n=256) -> torch.Tensor:
     cmap = plt.get_cmap(cmap_name)
     lut = np.asarray([cmap(i / (n - 1))[:3] for i in range(n)], dtype=np.float32)
     return torch.tensor(lut, device=device)
@@ -114,7 +114,7 @@ class Scene:
     eps_t: float = 0.01
 
     # style
-    cmap_name: str = "magma"
+    cmap_name: str = "gnuplot"
 
     dot_radius_px: int = 4
     line_radius_px: int = 1
@@ -389,7 +389,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
     u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device=device)
     P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
 
-    # Colors (pingpong magma, seam-free)
+    # Colors (pingpong gnuplot, seam-free)
     lut = build_lut(device, scene.cmap_name, 256)
     t_raw = (v % (2.0 * math.pi)) / (2.0 * math.pi)
     t_pp = pingpong01(t_raw)
@@ -478,7 +478,7 @@ def parse_args():
     ap.add_argument("--f", type=float, default=1.2)
     ap.add_argument("--t_step", type=float, default=0.40)
 
-    ap.add_argument("--cmap", type=str, default="magma", help="Matplotlib colormap name (e.g., magma, inferno, viridis, plasma)")
+    ap.add_argument("--cmap", type=str, default="gnuplot", help="Matplotlib colormap name (e.g., magma, inferno, viridis, plasma, gnuplot)")
     ap.add_argument("--dot_px", type=int, default=4)
     ap.add_argument("--line_px", type=int, default=1)
     ap.add_argument("--line_alpha", type=float, default=0.40)
