@@ -1,2 +1,7 @@
 *.png
 *.pyc
+
+# Temporary files
+temp.*
+tmp*
+tmp/
