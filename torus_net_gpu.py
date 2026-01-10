@@ -115,7 +115,6 @@ class Scene:
 
     # style
     cmap_name: str = "magma"
-    reverse_cmap: bool = False
 
     dot_radius_px: int = 4
     line_radius_px: int = 1
@@ -394,8 +393,6 @@ def render(scene: Scene, s1: int, s2: int, include_i_plus_1: bool, out_path: str
     lut = build_lut(device, scene.cmap_name, 256)
     t_raw = (v % (2.0 * math.pi)) / (2.0 * math.pi)
     t_pp = pingpong01(t_raw)
-    if scene.reverse_cmap:
-        t_pp = 1.0 - t_pp
     cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
     dot_cols = lut[cidx]  # [N,3]
 
@@ -433,8 +430,6 @@ def render(scene: Scene, s1: int, s2: int, include_i_plus_1: bool, out_path: str
     v_mid = v0 + 0.5 * dv
     t_raw_e = (v_mid % (2.0 * math.pi)) / (2.0 * math.pi)
     t_pp_e = pingpong01(t_raw_e)
-    if scene.reverse_cmap:
-        t_pp_e = 1.0 - t_pp_e
     eidx = torch.clamp((t_pp_e * 255.0).to(torch.int64), 0, 255)
     edge_cols = lut[eidx]  # [E,3]
     line_cols = edge_cols[:, None, :].expand(-1, samples, -1).reshape(-1, 3)
@@ -490,7 +485,6 @@ def parse_args():
     ap.add_argument("--f", type=float, default=1.2)
     ap.add_argument("--t_step", type=float, default=0.40)
 
-    ap.add_argument("--reverse", action="store_true")
     ap.add_argument("--dot_px", type=int, default=4)
     ap.add_argument("--line_px", type=int, default=1)
     ap.add_argument("--line_alpha", type=float, default=0.40)
@@ -508,7 +502,6 @@ if __name__ == "__main__":
         H=args.H,
         f=args.f,
         t_step=args.t_step,
-        reverse_cmap=args.reverse,
         dot_radius_px=args.dot_px,
         line_radius_px=args.line_px,
         line_alpha=args.line_alpha,
