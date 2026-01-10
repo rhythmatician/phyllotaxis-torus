@@ -150,9 +150,20 @@ Rendering time is dominated by the sphere-trace depth pass and per-pixel occlusi
 
 ```
 torus/
-├── torus_net_gpu.py       # Main renderer script
-├── requirements.txt        # Python dependencies
-└── README.md              # This file
+├── torus_net_gpu.py               # Main renderer script
+├── test_shading.py                # Demo test suite
+├── requirements.txt               # Python dependencies
+├── README.md                      # Main documentation (this file)
+├── docs/                          # Detailed documentation
+│   ├── SHADING_INTEGRATION.md    # Technical Phong shading details
+│   ├── SHADING_GUIDE.md          # Visual guide & parameter tuning
+│   ├── PROJECT_STATUS.md         # Complete feature list & status
+│   ├── INTEGRATION_SUMMARY.md    # Integration summary
+│   ├── COMPLETION_CHECKLIST.md   # Status checklist
+│   ├── QUICK_REFERENCE.py        # Command-line examples
+│   └── BUG_FIX.md                # Recent bug fixes
+├── png/                           # Output images (auto-created)
+└── json/                          # Metadata exports (auto-created)
 ```
 
 ## Tips & Tricks

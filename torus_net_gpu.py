@@ -360,44 +360,44 @@ def splat_spheres(
         if not inb.any():
             continue
 
-        x = x[inb]
-        y = y[inb]
-        P0 = centers[inb]
-        col = colors[inb]
-        rr2 = r2[inb]
+        x_inb = x[inb]
+        y_inb = y[inb]
+        P0_inb = centers[inb]
+        col_inb = colors[inb]
+        rr2_inb = r2[inb]
 
         # ray data for these pixels
-        Di = D[y, x, :]  # [K,3]
+        Di_inb = D[y_inb, x_inb, :]  # [K,3]
 
         # ray-sphere: |(C + tD) - P0|^2 = r^2
-        L = P0 - C[None, :]               # [K,3]
-        b = torch.sum(Di * L, dim=-1)     # [K]
-        c = torch.sum(L * L, dim=-1) - rr2
+        L = P0_inb - C[None, :]               # [K,3]
+        b = torch.sum(Di_inb * L, dim=-1)     # [K]
+        c = torch.sum(L * L, dim=-1) - rr2_inb
         disc = b * b - c
 
         ok = disc > 0.0
         if not ok.any():
             continue
 
-        x = x[ok]
-        y = y[ok]
-        col = col[ok]
-        b = b[ok]
-        disc = disc[ok]
-        Di = Di[ok]
-        P0 = P0[ok]  # Filter P0 here
+        x_ok = x_inb[ok]
+        y_ok = y_inb[ok]
+        col_ok = col_inb[ok]
+        b_ok = b[ok]
+        disc_ok = disc[ok]
+        Di_ok = Di_inb[ok]
+        P0_ok = P0_inb[ok]
 
-        t_sphere = b - torch.sqrt(disc)
+        t_sphere = b_ok - torch.sqrt(disc_ok)
         ok2 = t_sphere > 0.0
         if not ok2.any():
             continue
 
-        x = x[ok2]
-        y = y[ok2]
-        col = col[ok2]
+        x = x_ok[ok2]
+        y = y_ok[ok2]
+        col = col_ok[ok2]
         t_sphere = t_sphere[ok2]
-        Di = Di[ok2]
-        P0 = P0[ok2]
+        Di = Di_ok[ok2]
+        P0 = P0_ok[ok2]
 
         # occlusion vs torus
         dt = depth_t[y, x]
