@@ -12,9 +12,9 @@ Deps:
   pip install torch  (install CUDA build for GPU)
 
 Examples:
-  python torus_net_gpu_fixed_occlusion.py --s1 13 --s2 21 --out out_13_21.png
-  python torus_net_gpu_fixed_occlusion.py --s1 34 --s2 55 --out out_34_55.png
-  python torus_net_gpu_fixed_occlusion.py --s1 13 --s2 21 --include_i_plus_1 --out spiral.png
+  python torus_net_gpu.py --steps 13 21 --out out_13_21.png
+  python torus_net_gpu.py --steps 34 55 --out out_34_55.png
+  python torus_net_gpu.py --steps 1 13 21 --out spiral.png
 """
 
 import argparse
@@ -366,7 +366,7 @@ def splat_spheres(
 # -------------------------
 # Render
 # -------------------------
-def render(scene: Scene, s1: int, s2: int, include_i_plus_1: bool, out_path: str):
+def render(scene: Scene, steps: list[int], out_path: str):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[device] {device} (cuda_available={torch.cuda.is_available()})")
 
@@ -396,17 +396,13 @@ def render(scene: Scene, s1: int, s2: int, include_i_plus_1: bool, out_path: str
     cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
     dot_cols = lut[cidx]  # [N,3]
 
-    # Edges (optionally exclude i->i+1)
+    # Edges from step sizes
     edges = []
     N = scene.N
-    if include_i_plus_1:
-        for i in range(N - 1):
-            edges.append((i, i + 1))
-    for i in range(N):
-        if i + s1 < N:
-            edges.append((i, i + s1))
-        if i + s2 < N:
-            edges.append((i, i + s2))
+    for step in steps:
+        for i in range(N):
+            if i + step < N:
+                edges.append((i, i + step))
 
     # Build line samples on surface (E * S points)
     samples = scene.line_samples_per_edge + 1
@@ -473,11 +469,8 @@ def render(scene: Scene, s1: int, s2: int, include_i_plus_1: bool, out_path: str
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--s1", type=int, required=True)
-    ap.add_argument("--s2", type=int, required=True)
+    ap.add_argument("--steps", type=int, nargs="+", required=True, help="List of step sizes (e.g., --steps 1 13 21)")
     ap.add_argument("--out", type=str, required=True)
-
-    ap.add_argument("--include_i_plus_1", action="store_true")
 
     ap.add_argument("--N", type=int, default=1500)
     ap.add_argument("--W", type=int, default=1920)
@@ -510,8 +503,6 @@ if __name__ == "__main__":
 
     render(
         scene=scene,
-        s1=args.s1,
-        s2=args.s2,
-        include_i_plus_1=args.include_i_plus_1,
+        steps=args.steps,
         out_path=args.out,
     )
