@@ -121,8 +121,17 @@ This eliminates the "dots visible on the back side of the donut hole" problem.
 
 1. **Depth pass**: Sphere-trace the torus and store ray parameter (t_hit) at first surface hit
 2. **Color setup**: Assign colors to points/edges using a seam-free pingpong magma colormap
-3. **Line rendering**: Sample curves along (u,v) interpolation on the torus surface; alpha-blend into image
-4. **Dot rendering**: Render point spheres with per-pixel occlusion testing
+3. **Line rendering**: Sample curves along (u,v) interpolation on the torus surface; alpha-blend into image with **Phong shading**
+4. **Dot rendering**: Render point spheres with per-pixel occlusion testing and **Phong shading**
+
+### Phong Shading
+
+Each sphere (dot or line sample) is shaded using **Phong lighting**, which combines:
+- **Ambient**: Global illumination base (default: 0.3)
+- **Diffuse**: Directional lighting based on surface normal (default strength: 0.6)
+- **Specular**: Bright highlights from the light source (default strength: 0.5, shininess: 32.0)
+
+The lighting direction is set to `(-0.5, 0.3, 1.0)` by default, creating natural-looking highlights on the spheres. Per-pixel normals are computed from the ray–sphere intersection geometry, making even small spheres look convincingly 3D.
 
 ## Colormap Note
 

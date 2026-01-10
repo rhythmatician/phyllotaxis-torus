@@ -123,6 +123,13 @@ class Scene:
     line_alpha: float = 0.40
     line_samples_per_edge: int = 44
 
+    # lighting for sphere shading
+    light_dir: tuple = (-0.5, 0.3, 1.0)  # directional light direction (will be normalized)
+    ambient: float = 0.3
+    diffuse_strength: float = 0.6
+    specular_strength: float = 0.5
+    shininess: float = 32.0
+
 
 def build_camera(scene: Scene):
     u0 = scene.u0_cam
@@ -268,6 +275,40 @@ def disk_offsets(radius_px: int):
 # -------------------------
 # Correct occluded splatting: ray–sphere per pixel
 # -------------------------
+def phong_shade(
+    base_color: torch.Tensor,     # [K,3]
+    normal: torch.Tensor,          # [K,3]
+    view_dir: torch.Tensor,        # [K,3]
+    light_dir: torch.Tensor,       # [3]
+    ambient: float,
+    diffuse_strength: float,
+    specular_strength: float,
+    shininess: float,
+) -> torch.Tensor:
+    """
+    Compute Phong shading: ambient + diffuse + specular.
+    All inputs normalized.
+    Returns shaded color [K,3].
+    """
+    # Normalize inputs
+    light_dir = light_dir / (torch.linalg.norm(light_dir) + 1e-6)
+    
+    # Ambient
+    ambient_col = ambient * base_color
+    
+    # Diffuse
+    diff = torch.clamp(torch.sum(normal * light_dir[None, :], dim=-1, keepdim=True), 0.0, 1.0)
+    diffuse_col = diffuse_strength * diff * base_color
+    
+    # Specular (Blinn-Phong variant: half-vector)
+    half_vec = (view_dir + light_dir[None, :]) / (torch.linalg.norm(view_dir + light_dir[None, :], dim=-1, keepdim=True) + 1e-6)
+    spec = torch.clamp(torch.sum(normal * half_vec, dim=-1, keepdim=True), 0.0, 1.0)
+    spec_pow = torch.pow(spec, shininess)
+    specular_col = specular_strength * spec_pow * torch.ones_like(base_color)
+    
+    return ambient_col + diffuse_col + specular_col
+
+
 def splat_spheres(
     img: torch.Tensor,
     depth_t: torch.Tensor,
@@ -279,12 +320,14 @@ def splat_spheres(
     scene: Scene,
     right, up, forward,
     alpha: float | None = None,   # None => overwrite
+    use_shading: bool = True,      # Apply Phong shading?
 ):
     """
     Render each center as a small sphere, per covered pixel:
       - gather ray direction D[y,x]
       - solve ray-sphere intersection
       - compare t_hit_sphere to depth_t[y,x] (torus)
+      - if use_shading: compute per-pixel normal and apply Phong shading
     """
     H, W = scene.H, scene.W
     valid, z_cam, px, py = project_points(centers, C, right, up, forward, scene.f, W, H)
@@ -305,6 +348,10 @@ def splat_spheres(
     r2 = r_world * r_world
 
     offsets = disk_offsets(radius_px)
+
+    # Prepare lighting direction for shading
+    light_dir_np = np.array(scene.light_dir, dtype=np.float32)
+    light_dir = torch.tensor(light_dir_np, device=D.device, dtype=torch.float32)
 
     for dx, dy in offsets:
         x = px + dx
@@ -337,6 +384,8 @@ def splat_spheres(
         col = col[ok]
         b = b[ok]
         disc = disc[ok]
+        Di = Di[ok]
+        P0 = P0[ok]  # Filter P0 here
 
         t_sphere = b - torch.sqrt(disc)
         ok2 = t_sphere > 0.0
@@ -347,6 +396,8 @@ def splat_spheres(
         y = y[ok2]
         col = col[ok2]
         t_sphere = t_sphere[ok2]
+        Di = Di[ok2]
+        P0 = P0[ok2]
 
         # occlusion vs torus
         dt = depth_t[y, x]
@@ -358,6 +409,32 @@ def splat_spheres(
         x = x[vis]
         y = y[vis]
         col = col[vis]
+        t_sphere = t_sphere[vis]
+        Di = Di[vis]
+        P0 = P0[vis]
+
+        # Apply Phong shading if requested
+        if use_shading:
+            # Compute 3D hit point on sphere surface
+            hit_point = C[None, :] + Di * t_sphere[:, None]  # [K,3]
+            
+            # Normal is radial direction from center
+            normal = (hit_point - P0) / (torch.linalg.norm(hit_point - P0, dim=-1, keepdim=True) + 1e-6)  # [K,3]
+            
+            # View direction (from hit point toward camera)
+            view_dir = (C[None, :] - hit_point) / (torch.linalg.norm(C[None, :] - hit_point, dim=-1, keepdim=True) + 1e-6)  # [K,3]
+            
+            # Apply Phong shading
+            col = phong_shade(
+                base_color=col,
+                normal=normal,
+                view_dir=view_dir,
+                light_dir=light_dir,
+                ambient=scene.ambient,
+                diffuse_strength=scene.diffuse_strength,
+                specular_strength=scene.specular_strength,
+                shininess=scene.shininess,
+            )
 
         if alpha is None:
             img[y, x, :] = col
@@ -442,7 +519,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
     edge_cols = lut[eidx]  # [E,3]
     line_cols = edge_cols[:, None, :].expand(-1, samples, -1).reshape(-1, 3)
 
-    # Render lines first (alpha blend)
+    # Render lines first (alpha blend, light shading)
     splat_spheres(
         img=img,
         depth_t=depth_t,
@@ -456,9 +533,10 @@ def render(scene: Scene, steps: list[int], out_path: str):
         up=up,
         forward=forward,
         alpha=scene.line_alpha,
+        use_shading=True,
     )
 
-    # Render dots on top (overwrite)
+    # Render dots on top (overwrite, full shading)
     splat_spheres(
         img=img,
         depth_t=depth_t,
@@ -472,6 +550,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
         up=up,
         forward=forward,
         alpha=None,
+        use_shading=True,
     )
 
     img_cpu = img.clamp(0.0, 1.0).detach().cpu().numpy()
