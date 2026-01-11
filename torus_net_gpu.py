@@ -101,6 +101,9 @@ class Scene:
     f: float = 1.2
     t_step: float = 0.40
     target: tuple = (0.0, 0.0, 1.0)
+    
+    # anti-aliasing
+    aa_factor: int = 1  # 1=no AA, 2=2x2 SSAA (4x pixels), 3=3x3 SSAA (9x pixels)
 
     # inside-tube camera recipe
     u0_cam: float = -math.pi / 4
@@ -552,6 +555,14 @@ def render(scene: Scene, steps: list[int], out_path: str):
     up = torch.tensor(up_np, device=device, dtype=torch.float32)
     forward = torch.tensor(forward_np, device=device, dtype=torch.float32)
 
+    # Apply supersampling for anti-aliasing
+    W_render = scene.W * scene.aa_factor
+    H_render = scene.H * scene.aa_factor
+    
+    # Temporarily modify scene dimensions for rendering
+    original_W, original_H = scene.W, scene.H
+    scene.W, scene.H = W_render, H_render
+
     # Rays + depth (t_hit)
     D = build_rays(scene, device, right, up, forward)              # [H,W,3]
     depth_t = render_depth_t(scene, device, C, D).to(torch.float32)  # [H,W]
@@ -669,6 +680,16 @@ def render(scene: Scene, steps: list[int], out_path: str):
         sphere_depth=sphere_depth,  # Share depth buffer!
     )
 
+    # Restore original dimensions
+    scene.W, scene.H = original_W, original_H
+
+    # Downsample if anti-aliasing was used
+    if scene.aa_factor > 1:
+        # Reshape to [H_out, aa_factor, W_out, aa_factor, 3]
+        img = img.reshape(original_H, scene.aa_factor, original_W, scene.aa_factor, 3)
+        # Average over the aa_factor dimensions
+        img = img.mean(dim=(1, 3))  # Result: [H_out, W_out, 3]
+
     img_cpu = img.clamp(0.0, 1.0).detach().cpu().numpy()
     plt.imsave(png_path, img_cpu)
     print(f"[saved] {png_path}")
@@ -693,6 +714,8 @@ def parse_args():
     ap.add_argument("--H", type=int, default=1080)
     ap.add_argument("--f", type=float, default=1.2)
     ap.add_argument("--t_step", type=float, default=0.40)
+    
+    ap.add_argument("--aa", type=int, default=1, help="Anti-aliasing factor: 1=off, 2=2x2 SSAA (4x pixels), 3=3x3 SSAA (9x pixels)")
 
     ap.add_argument("--cmap", type=str, default="gnuplot", help="Matplotlib colormap name (e.g., magma, inferno, viridis, plasma, gnuplot)")
 
@@ -722,6 +745,7 @@ if __name__ == "__main__":
         H=args.H,
         f=args.f,
         t_step=args.t_step,
+        aa_factor=args.aa,
         cmap_name=args.cmap,
         dot_radius_px=args.dot_px,
         dot_radius_dynamic=args.dot_dynamic,
