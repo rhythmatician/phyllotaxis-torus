@@ -162,8 +162,17 @@ class SDFGPURenderer:
             # Create new buffers
             self.node_positions_buffer = self.ctx.buffer(node_positions.tobytes())
             self.node_colors_buffer = self.ctx.buffer(node_colors.tobytes())
-            self.edge_indices_buffer = self.ctx.buffer(edge_indices.tobytes())
-            self.edge_colors_buffer = self.ctx.buffer(edge_colors.tobytes())
+            
+            # Handle empty edge arrays
+            if len(edge_indices) > 0:
+                self.edge_indices_buffer = self.ctx.buffer(edge_indices.tobytes())
+                self.edge_colors_buffer = self.ctx.buffer(edge_colors.tobytes())
+            else:
+                # Create minimal dummy buffers for empty edges
+                dummy_edge = np.array([[0, 0]], dtype=np.int32)
+                dummy_color = np.array([[0.0, 0.0, 0.0, 1.0]], dtype=np.float32)
+                self.edge_indices_buffer = self.ctx.buffer(dummy_edge.tobytes())
+                self.edge_colors_buffer = self.ctx.buffer(dummy_color.tobytes())
             
             if self.output_buffer is None:
                 # Create output buffer
