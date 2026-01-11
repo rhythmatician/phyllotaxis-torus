@@ -209,7 +209,7 @@ def test_few_nodes():
     gpu_img = load_rendered_image(gpu_path)
     
     # Compare
-    metrics = compare_images(cpu_img, gpu_img, threshold=0.99)
+    metrics = compare_images(cpu_img, gpu_img, threshold=0.999)  # Was passing at 0.99 even though visually different
     
     print(f"\n[Test 2: Few Nodes (N=13)]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
@@ -262,7 +262,7 @@ def test_medium_nodes():
     gpu_img = load_rendered_image(gpu_path)
     
     # Compare
-    metrics = compare_images(cpu_img, gpu_img, threshold=0.99)
+    metrics = compare_images(cpu_img, gpu_img, threshold=0.999)
     
     print(f"\n[Test 3: Medium Nodes (N=89)]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
