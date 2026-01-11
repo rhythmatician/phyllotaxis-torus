@@ -95,7 +95,7 @@ float get_sdf(vec3 pos, out int nearest_idx) {
 }
 
 // Estimate normal using gradient
-vec3 estimate_normal(vec3 pos, float eps, int hint_idx) {
+vec3 estimate_normal(vec3 pos, float eps) {
     vec2 e = vec2(eps, 0.0);
     int dummy;
     return normalize(vec3(
@@ -143,9 +143,19 @@ vec4 get_color_at_point(vec3 pos, int nearest_idx, float blend_dist) {
         // Blend nearby sphere colors
         vec4 total_color = vec4(0.0);
         float total_weight = 0.0;
+        float min_dist = 1e10;
+        int nearest = 0;
         
         for (int i = 0; i < numSpheres; i++) {
             float dist = length(pos - sphere_centers[i]);
+            
+            // Track nearest sphere while we're iterating
+            if (dist < min_dist) {
+                min_dist = dist;
+                nearest = i;
+            }
+            
+            // Add to blend if within blend distance
             if (dist < blend_dist) {
                 float weight = 1.0 - (dist / blend_dist);
                 weight = weight * weight;
@@ -158,16 +168,7 @@ vec4 get_color_at_point(vec3 pos, int nearest_idx, float blend_dist) {
             return total_color / total_weight;
         }
         
-        // Fallback: find nearest
-        float min_dist = 1e10;
-        int nearest = 0;
-        for (int i = 0; i < numSpheres; i++) {
-            float dist = length(pos - sphere_centers[i]);
-            if (dist < min_dist) {
-                min_dist = dist;
-                nearest = i;
-            }
-        }
+        // Fallback: use nearest sphere found during iteration
         return sphere_colors[nearest];
     } else {
         // Use nearest sphere color directly
@@ -245,7 +246,7 @@ void main() {
     
     if (hit) {
         // Compute normal at hit point
-        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0, hit_idx);
+        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0);
         
         // Get base color
         vec4 base_color = get_color_at_point(hit_pos, hit_idx, blend_radius);

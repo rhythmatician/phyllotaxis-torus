@@ -624,7 +624,8 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     except ImportError as e:
         print(f"[error] Failed to import GPU renderer: {e}")
         print("[fallback] Using CPU renderer instead")
-        return render(scene, steps, out_path)
+        render(scene, steps, out_path)
+        return
     
     print(f"[GPU] Initializing OpenGL renderer...")
     
@@ -642,8 +643,8 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     except Exception as e:
         print(f"[error] Failed to initialize GPU renderer: {e}")
         print("[fallback] Using CPU renderer instead")
-        gpu_renderer = None
-        return render(scene, steps, out_path)
+        render(scene, steps, out_path)
+        return
     
     # Organize outputs by file type
     out_path = Path(out_path)
@@ -799,15 +800,22 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
         # Convert RGBA to RGB for output
         img_rgb = img_rgba[:, :, :3]
         
-        # Cleanup GPU resources
-        gpu_renderer.cleanup()
+        # Cleanup GPU resources (do not let cleanup errors prevent saving output)
+        try:
+            gpu_renderer.cleanup()
+        except Exception as cleanup_err:
+            print(f"[warning] GPU cleanup failed after successful render: {cleanup_err}")
         
     except Exception as e:
         print(f"[error] GPU rendering failed: {e}")
         print("[fallback] Using CPU renderer instead")
         if gpu_renderer:
-            gpu_renderer.cleanup()
-        return render(scene, steps, out_path)
+            try:
+                gpu_renderer.cleanup()
+            except Exception:
+                pass  # Ignore cleanup errors during fallback
+        render(scene, steps, out_path)
+        return
     
     # Save output
     img_rgb = np.clip(img_rgb, 0.0, 1.0)

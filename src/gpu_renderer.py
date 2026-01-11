@@ -127,17 +127,40 @@ class GPURenderer:
         colors = np.asarray(colors, dtype=np.float32).reshape(-1, 4)
         radii = np.asarray(radii, dtype=np.float32).reshape(-1)
         
-        # Create or update buffers
-        if self.sphere_centers_buffer is None:
+        # Compute required buffer sizes in bytes
+        centers_nbytes = centers.nbytes
+        colors_nbytes = colors.nbytes
+        radii_nbytes = radii.nbytes
+        
+        # Create or update buffers, recreating them if the size has changed
+        recreate_sphere_buffers = (
+            self.sphere_centers_buffer is None
+            or self.sphere_colors_buffer is None
+            or self.sphere_radii_buffer is None
+            or self.sphere_centers_buffer.size != centers_nbytes
+            or self.sphere_colors_buffer.size != colors_nbytes
+            or self.sphere_radii_buffer.size != radii_nbytes
+        )
+
+        if recreate_sphere_buffers:
+            # Release old buffers before recreating
+            if self.sphere_centers_buffer is not None:
+                self.sphere_centers_buffer.release()
+            if self.sphere_colors_buffer is not None:
+                self.sphere_colors_buffer.release()
+            if self.sphere_radii_buffer is not None:
+                self.sphere_radii_buffer.release()
+
             self.sphere_centers_buffer = self.ctx.buffer(centers.tobytes())
             self.sphere_colors_buffer = self.ctx.buffer(colors.tobytes())
             self.sphere_radii_buffer = self.ctx.buffer(radii.tobytes())
-            
-            # Create output buffer
-            output_size = self.width * self.height * 4 * 4  # RGBA float32
-            self.output_buffer = self.ctx.buffer(reserve=output_size)
+
+            if self.output_buffer is None:
+                # Create output buffer (depends only on image size)
+                output_size = self.width * self.height * 4 * 4  # RGBA float32
+                self.output_buffer = self.ctx.buffer(reserve=output_size)
         else:
-            # Update existing buffers
+            # Update existing buffers without changing their size
             self.sphere_centers_buffer.write(centers.tobytes())
             self.sphere_colors_buffer.write(colors.tobytes())
             self.sphere_radii_buffer.write(radii.tobytes())
@@ -207,16 +230,22 @@ class GPURenderer:
         """Release GPU resources."""
         if self.sphere_centers_buffer is not None:
             self.sphere_centers_buffer.release()
+            self.sphere_centers_buffer = None
         if self.sphere_colors_buffer is not None:
             self.sphere_colors_buffer.release()
+            self.sphere_colors_buffer = None
         if self.sphere_radii_buffer is not None:
             self.sphere_radii_buffer.release()
+            self.sphere_radii_buffer = None
         if self.output_buffer is not None:
             self.output_buffer.release()
+            self.output_buffer = None
         if self.program is not None:
             self.program.release()
+            self.program = None
         if self.ctx is not None:
             self.ctx.release()
+            self.ctx = None
     
     def __del__(self):
         """Ensure cleanup on deletion."""

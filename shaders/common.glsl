@@ -1,4 +1,14 @@
 // Common GLSL functions for ray marching and shading
+//
+// NOTE: This file is currently not included in any shader source.
+// The functions below (smooth_min, sphere_sdf, phong_shade) are duplicated
+// in raymarch.comp for direct compilation without includes.
+//
+// This file is preserved for potential future use if GLSL include/concatenation
+// mechanisms are implemented in the build pipeline.
+//
+// If you wish to centralize common GLSL utilities, ensure they are pulled
+// into other shaders via your project's GLSL include/concatenation mechanism.
 
 // Smooth minimum function (Inigo Quilez formula)
 float smooth_min(float d1, float d2, float k) {
