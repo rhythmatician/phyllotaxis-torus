@@ -119,7 +119,14 @@ class Scene:
     cmap_name: str = "gnuplot"
 
     dot_radius_px: int = 4
+    dot_radius_dynamic: bool = True     # Use dynamic sizing based on local density
+    dot_size_min: float = 0.5           # Minimum size multiplier for dynamic dots
+    dot_size_max: float = 2.5           # Maximum size multiplier for dynamic dots
+
     line_radius_px: int = 1
+    line_radius_dynamic: bool = True    # Use dynamic line thickness (inverse of dots)
+    line_size_min: float = 0.5          # Minimum size multiplier for dynamic lines
+    line_size_max: float = 2.5          # Maximum size multiplier for dynamic lines
     line_alpha: float = 0.40
     line_samples_per_edge: int = 44
 
@@ -127,7 +134,7 @@ class Scene:
     light_dir: tuple = (-0.5, 0.3, 1.0)  # directional light direction (will be normalized)
     ambient: float = 0.3
     diffuse_strength: float = 0.6
-    specular_strength: float = 0.5
+    specular_strength: float = 0.5 
     shininess: float = 32.0
 
 
@@ -147,6 +154,46 @@ def build_camera(scene: Scene):
 
     right, up, forward = camera_basis_np(cam, scene.target)
     return cam, right, up, forward
+
+
+def compute_dynamic_radii(v: torch.Tensor, R: float, r: float, base_radius: int, size_min: float, size_max: float) -> torch.Tensor:
+    """
+    Compute dynamic radii for phyllotaxis dots based on local spacing.
+
+    In phyllotaxis on a torus, local density varies with v (minor circle angle):
+    - Near v=0 (outer equator): points are more spread out → larger dots
+    - Near v=±π (inner equator): points are compressed → smaller dots
+
+    The local "circumference" at angle v is: 2π(R + r·cos(v))
+    Larger circumference → more space → larger dots
+
+    Args:
+        v: Minor circle angles [N]
+        R: Major radius (torus)
+        r: Minor radius (tube)
+        base_radius: Base pixel radius
+        size_min: Minimum size multiplier
+        size_max: Maximum size multiplier
+
+    Returns:
+        radii: Dynamic pixel radii [N]
+    """
+    # Local circumference factor: cos(v) ranges from -1 (inner) to +1 (outer)
+    # R + r·cos(v) is the distance from torus center to the point's circular path
+    circ_factor = R + r * torch.cos(v)
+
+    # Normalize to [0, 1] where 0=inner equator, 1=outer equator
+    circ_min = R - r  # Inner equator
+    circ_max = R + r  # Outer equator
+    normalized = (circ_factor - circ_min) / (circ_max - circ_min)
+
+    # Map to size range [size_min, size_max]
+    size_mult = size_min + (size_max - size_min) * normalized
+
+    # Apply to base radius
+    radii = base_radius * size_mult
+
+    return radii
 
 
 # -------------------------
@@ -292,20 +339,20 @@ def phong_shade(
     """
     # Normalize inputs
     light_dir = light_dir / (torch.linalg.norm(light_dir) + 1e-6)
-    
+
     # Ambient
     ambient_col = ambient * base_color
-    
+
     # Diffuse
     diff = torch.clamp(torch.sum(normal * light_dir[None, :], dim=-1, keepdim=True), 0.0, 1.0)
     diffuse_col = diffuse_strength * diff * base_color
-    
+
     # Specular (Blinn-Phong variant: half-vector)
     half_vec = (view_dir + light_dir[None, :]) / (torch.linalg.norm(view_dir + light_dir[None, :], dim=-1, keepdim=True) + 1e-6)
     spec = torch.clamp(torch.sum(normal * half_vec, dim=-1, keepdim=True), 0.0, 1.0)
     spec_pow = torch.pow(spec, shininess)
     specular_col = specular_strength * spec_pow * torch.ones_like(base_color)
-    
+
     return ambient_col + diffuse_col + specular_col
 
 
@@ -316,7 +363,7 @@ def splat_spheres(
     C: torch.Tensor,
     centers: torch.Tensor,    # [M,3]
     colors: torch.Tensor,     # [M,3]
-    radius_px: int,
+    radius_px: int | torch.Tensor,  # int for uniform, Tensor[M] for per-point
     scene: Scene,
     right, up, forward,
     alpha: float | None = None,   # None => overwrite
@@ -328,6 +375,7 @@ def splat_spheres(
       - solve ray-sphere intersection
       - compare t_hit_sphere to depth_t[y,x] (torus)
       - if use_shading: compute per-pixel normal and apply Phong shading
+      - radius_px can be a scalar (uniform) or Tensor (per-point dynamic sizing)
     """
     H, W = scene.H, scene.W
     valid, z_cam, px, py = project_points(centers, C, right, up, forward, scene.f, W, H)
@@ -338,16 +386,28 @@ def splat_spheres(
     px = px[valid]
     py = py[valid]
 
+    # Handle dynamic radii
+    if isinstance(radius_px, torch.Tensor):
+        radius_px = radius_px[valid]  # Filter per-point radii
+
     if centers.numel() == 0:
         return
 
     # Convert requested pixel radius to an approximate world radius *per point* (keeps apparent size stable):
     # r_px ≈ r_world * f/(z_cam*aspect)*(W-1)/2  => r_world ≈ r_px * z_cam * aspect * 2 / (f*(W-1))
     aspect = W / H
-    r_world = (radius_px * z_cam * aspect * 2.0) / (scene.f * (W - 1))
+
+    # Handle both uniform and per-point radii
+    if isinstance(radius_px, torch.Tensor):
+        r_world = (radius_px * z_cam * aspect * 2.0) / (scene.f * (W - 1))
+        max_radius_px = int(torch.ceil(torch.max(radius_px)).item())
+    else:
+        r_world = (radius_px * z_cam * aspect * 2.0) / (scene.f * (W - 1))
+        max_radius_px = radius_px
+
     r2 = r_world * r_world
 
-    offsets = disk_offsets(radius_px)
+    offsets = disk_offsets(max_radius_px)
 
     # Prepare lighting direction for shading
     light_dir_np = np.array(scene.light_dir, dtype=np.float32)
@@ -455,7 +515,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
     json_dir = Path("json")
     png_dir.mkdir(exist_ok=True)
     json_dir.mkdir(exist_ok=True)
-    
+
     png_path = png_dir / out_path.name
     json_path = json_dir / out_path.with_suffix(".json").name
 
@@ -484,6 +544,17 @@ def render(scene: Scene, steps: list[int], out_path: str):
     t_pp = pingpong01(t_raw)
     cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
     dot_cols = lut[cidx]  # [N,3]
+
+    # Compute dynamic dot radii based on local density (v-coordinate)
+    if scene.dot_radius_dynamic:
+        dot_radii = compute_dynamic_radii(
+            v, scene.R, scene.r_inner, 
+            scene.dot_radius_px, 
+            scene.dot_size_min, 
+            scene.dot_size_max
+        )
+    else:
+        dot_radii = scene.dot_radius_px  # Uniform radius
 
     # Edges from step sizes
     edges = []
@@ -519,7 +590,24 @@ def render(scene: Scene, steps: list[int], out_path: str):
     edge_cols = lut[eidx]  # [E,3]
     line_cols = edge_cols[:, None, :].expand(-1, samples, -1).reshape(-1, 3)
 
-    # Render lines first (alpha blend, light shading)
+    # Compute dynamic line radii (INVERSE of dot sizing - thick where dots are small)
+    if scene.line_radius_dynamic:
+        # Compute per-edge radii at midpoint
+        edge_radii = compute_dynamic_radii(
+            v_mid, scene.R, scene.r_inner,
+            scene.line_radius_px,
+            scene.line_size_min,
+            scene.line_size_max
+        )
+        # INVERT: max where dots are min, min where dots are max
+        # Map [min, max] → [max, min]
+        inverted_radii = scene.line_size_max + scene.line_size_min - edge_radii
+        # Broadcast to all samples along each edge [E,S] → [E*S]
+        line_radii = inverted_radii[:, None].expand(-1, samples).reshape(-1)
+    else:
+        line_radii = scene.line_radius_px  # Uniform radius
+
+    # Render lines first (alpha blend, light shading, with dynamic radii)
     splat_spheres(
         img=img,
         depth_t=depth_t,
@@ -527,7 +615,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
         C=C,
         centers=line_pts,
         colors=line_cols,
-        radius_px=scene.line_radius_px,
+        radius_px=line_radii,
         scene=scene,
         right=right,
         up=up,
@@ -536,7 +624,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
         use_shading=True,
     )
 
-    # Render dots on top (overwrite, full shading)
+    # Render dots on top (overwrite, full shading, with dynamic radii)
     splat_spheres(
         img=img,
         depth_t=depth_t,
@@ -544,7 +632,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
         C=C,
         centers=P,
         colors=dot_cols,
-        radius_px=scene.dot_radius_px,
+        radius_px=dot_radii,  # Use dynamic radii
         scene=scene,
         right=right,
         up=up,
@@ -579,8 +667,18 @@ def parse_args():
     ap.add_argument("--t_step", type=float, default=0.40)
 
     ap.add_argument("--cmap", type=str, default="gnuplot", help="Matplotlib colormap name (e.g., magma, inferno, viridis, plasma, gnuplot)")
+
     ap.add_argument("--dot_px", type=int, default=4)
+    ap.add_argument("--dot_dynamic", action="store_true", default=True, help="Use dynamic dot sizing based on local density (default: True)")
+    ap.add_argument("--no_dot_dynamic", action="store_false", dest="dot_dynamic", help="Disable dynamic dot sizing")
+    ap.add_argument("--dot_size_min", type=float, default=0.5, help="Minimum size multiplier for dynamic dots (default: 0.5)")
+    ap.add_argument("--dot_size_max", type=float, default=2.5, help="Maximum size multiplier for dynamic dots (default: 2.5)")
+
     ap.add_argument("--line_px", type=int, default=1)
+    ap.add_argument("--line_dynamic", action="store_true", default=True, help="Use dynamic line thickness (inverse of dots) (default: True)")
+    ap.add_argument("--no_line_dynamic", action="store_false", dest="line_dynamic", help="Disable dynamic line thickness")
+    ap.add_argument("--line_size_min", type=float, default=0.5, help="Minimum size multiplier for dynamic lines (default: 0.5)")
+    ap.add_argument("--line_size_max", type=float, default=2.5, help="Maximum size multiplier for dynamic lines (default: 2.5)")
     ap.add_argument("--line_alpha", type=float, default=0.40)
     ap.add_argument("--line_samples", type=int, default=44)
 
@@ -598,7 +696,13 @@ if __name__ == "__main__":
         t_step=args.t_step,
         cmap_name=args.cmap,
         dot_radius_px=args.dot_px,
+        dot_radius_dynamic=args.dot_dynamic,
+        dot_size_min=args.dot_size_min,
+        dot_size_max=args.dot_size_max,
         line_radius_px=args.line_px,
+        line_radius_dynamic=args.line_dynamic,
+        line_size_min=args.line_size_min,
+        line_size_max=args.line_size_max,
         line_alpha=args.line_alpha,
         line_samples_per_edge=args.line_samples,
     )
