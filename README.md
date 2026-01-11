@@ -4,7 +4,7 @@ A GPU-accelerated renderer for beautiful phyllotaxis-based point distributions o
 
 ## Features
 
-- **GPU Acceleration**: CUDA-enabled PyTorch for fast rendering (or CPU fallback)
+- **GPU Acceleration**: FIXME: Intel(R) HD Graphics 630 doesn't support CUDA - lets find another way to use the GPU
 - **Correct Occlusion**: Uses ray–sphere intersection per pixel to properly occlude dots and lines behind the torus surface
 - **Flexible Edge Networks**: Specify any combination of step sizes to create custom phyllotaxis networks (e.g., Fibonacci spirals)
 - **High-Quality Output**: 1920×1080 default with configurable resolution, point styles, and line rendering
@@ -141,7 +141,7 @@ The colormap is applied with a "pingpong" effect that maps [0, 2π] → [0, 1, 0
 
 ## Performance
 
-- **GPU (CUDA)**: ~1–2 seconds per frame (1920×1080, N=1500 points)
+- **GPU**: hopefully ~1–2 seconds per frame (1920×1080)
 - **CPU**: ~30–60 seconds per frame
 
 Rendering time is dominated by the sphere-trace depth pass and per-pixel occlusion tests.

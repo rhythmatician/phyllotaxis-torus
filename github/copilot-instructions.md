@@ -103,10 +103,8 @@ python torus_net_gpu.py --steps 13 21 --out spiral.png
 pip install -r requirements.txt
 ```
 
-For GPU support (CUDA PyTorch):
-```powershell
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
-```
+For GPU support:
+> TBD: CUDA unavailable with Intel(R) HD Graphics 630
 
 ## File Naming Conventions
 
