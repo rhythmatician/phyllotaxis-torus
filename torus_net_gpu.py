@@ -442,9 +442,9 @@ def splat_spheres(
 
 
 # -------------------------
-# Render
+# CPU Renderer
 # -------------------------
-def render(scene: Scene, steps: list[int], out_path: str):
+def render_cpu(scene: Scene, steps: list[int], out_path: str):
     device = torch.device("cpu")
     print(f"[device] {device}")
 
@@ -624,7 +624,7 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     except ImportError as e:
         print(f"[error] Failed to import GPU renderer: {e}")
         print("[fallback] Using CPU renderer instead")
-        render(scene, steps, out_path)
+        render_cpu(scene, steps, out_path)
         return
     
     print(f"[GPU] Initializing OpenGL renderer...")
@@ -644,7 +644,7 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     except Exception as e:
         print(f"[error] Failed to initialize GPU renderer: {e}")
         print("[fallback] Using CPU renderer instead")
-        render(scene, steps, out_path)
+        render_cpu(scene, steps, out_path)
         return
     
     # Organize outputs by file type
@@ -857,7 +857,7 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
                 gpu_renderer.cleanup()
             except Exception:
                 pass  # Ignore cleanup errors during fallback
-        render(scene, steps, out_path)
+        render_cpu(scene, steps, out_path)
         return
     
     # Save output
@@ -886,7 +886,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     except ImportError as e:
         print(f"[error] Failed to import SDF GPU renderer: {e}")
         print("[fallback] Using CPU renderer instead")
-        render(scene, steps, out_path)
+        render_cpu(scene, steps, out_path)
         return
     
     print(f"[SDF-GPU] Initializing OpenGL SDF renderer...")
@@ -906,7 +906,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     except Exception as e:
         print(f"[error] Failed to initialize SDF GPU renderer: {e}")
         print("[fallback] Using CPU renderer instead")
-        render(scene, steps, out_path)
+        render_cpu(scene, steps, out_path)
         return
     
     # Organize outputs by file type
@@ -1087,7 +1087,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
             except Exception as cleanup_err:
                 # Ignore cleanup errors in fallback path, but log for diagnostics
                 print(f"[warning] GPU cleanup failed during fallback after render error: {cleanup_err}")
-        render(scene, steps, out_path)
+        render_cpu(scene, steps, out_path)
         return
     
     # Save output
@@ -1185,7 +1185,7 @@ if __name__ == "__main__":
         )
     else:
         print("[mode] CPU rendering (PyTorch)")
-        render(
+        render_cpu(
             scene=scene,
             steps=args.steps,
             out_path=args.out,
