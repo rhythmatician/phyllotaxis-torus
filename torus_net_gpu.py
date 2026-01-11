@@ -569,7 +569,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, nargs="+", required=True, help="List of step sizes (e.g., --steps 1 13 21)")
+    ap.add_argument("--steps", type=int, nargs="*", default=[], help="List of step sizes (e.g., --steps 1 13 21). If omitted, only dots are rendered.")
     ap.add_argument("--out", type=str, required=True)
 
     ap.add_argument("--N", type=int, default=1500)
