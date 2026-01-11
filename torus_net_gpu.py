@@ -779,9 +779,9 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     print(f"[GPU] Uploading {len(centers_np)} spheres to GPU...")
     
     # Warn about performance with many spheres
-    if len(centers_np) > 1000:
+    if (len(centers_np) > 1000) and not gpu_renderer.has_hardware_acceleration(): 
         print(f"[GPU] Warning: {len(centers_np)} spheres may be slow without hardware GPU acceleration")
-        print(f"[GPU] Consider using --steps without arguments (dots only) for faster rendering")
+        print(f"[GPU] Consider using --steps without arguments (dots only) for faster rendering, or use GPU hardware acceleration.")
     
     # For GPU rendering, reduce max_steps to improve performance
     gpu_max_steps = min(scene.max_steps, 50)  # Limit to 50 steps for GPU

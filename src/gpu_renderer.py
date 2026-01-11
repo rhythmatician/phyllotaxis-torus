@@ -254,6 +254,8 @@ class GPURenderer:
         except Exception:
             pass  # Ignore errors during cleanup
 
+        def has_hardware_acceleration(self) -> bool:
+            return self.ctx is not None
 
 def test_gpu_availability() -> Tuple[bool, Optional[dict]]:
     """
@@ -274,3 +276,4 @@ def test_gpu_availability() -> Tuple[bool, Optional[dict]]:
         return True, gpu_info
     except Exception as e:
         return False, None
+
