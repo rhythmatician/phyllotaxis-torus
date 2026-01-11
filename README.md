@@ -4,11 +4,14 @@ A GPU-accelerated renderer for beautiful phyllotaxis-based point distributions o
 
 ## Features
 
-- **GPU Acceleration**: FIXME: Intel(R) HD Graphics 630 doesn't support CUDA - lets find another way to use the GPU
+- **Dual Rendering Modes**:
+  - **CPU Mode** (default): PyTorch-based splatting renderer, works on any system
+  - **GPU Mode** (`--gpu` flag): OpenGL compute shader ray marching, requires OpenGL 4.3+ GPU
+- **OpenGL GPU Acceleration**: Works with Intel HD Graphics 630 and other OpenGL 4.3+ GPUs (no CUDA required)
 - **Correct Occlusion**: Uses ray–sphere intersection per pixel to properly occlude dots and lines behind the torus surface
 - **Flexible Edge Networks**: Specify any combination of step sizes to create custom phyllotaxis networks (e.g., Fibonacci spirals)
 - **High-Quality Output**: 1920×1080 default with configurable resolution, point styles, and line rendering
-- **Colormap Support**: Seam-free "pingpong" magma colormap via matplotlib
+- **Colormap Support**: Seam-free "pingpong" colormap via matplotlib (gnuplot, magma, viridis, etc.)
 
 ## Installation
 
@@ -25,23 +28,31 @@ A GPU-accelerated renderer for beautiful phyllotaxis-based point distributions o
 
    Or manually:
    ```powershell
-   pip install numpy matplotlib torch
+   pip install numpy matplotlib torch moderngl
    ```
-
-   For GPU acceleration, install a CUDA-enabled PyTorch build from https://pytorch.org/
 
 ## Usage
 
 ### Basic Examples
 
-Generate a simple 13–21 Fibonacci spiral:
+Generate a simple 13–21 Fibonacci spiral (CPU mode):
 ```powershell
 python torus_net_gpu.py --steps 13 21 --out fibonacci.png
+```
+
+Generate with GPU acceleration (OpenGL compute shaders):
+```powershell
+python torus_net_gpu.py --gpu --steps 13 21 --out fibonacci_gpu.png
 ```
 
 Generate with nearest neighbors (step size 1):
 ```powershell
 python torus_net_gpu.py --steps 1 --out neighbors.png
+```
+
+Generate dots only (no edges) for faster GPU rendering:
+```powershell
+python torus_net_gpu.py --gpu --out dots_only.png
 ```
 
 Generate a complex multi-scale network:
@@ -68,11 +79,14 @@ This makes it easy to reproduce renders or tweak existing ones!
 ## Command-Line Arguments
 
 #### Required
-- `--steps`: Space-separated list of step sizes (e.g., `13 21`)
 - `--out`: Output PNG filename
 
+#### Optional (Rendering Mode)
+- `--gpu`: Use OpenGL GPU acceleration (ray marching with compute shaders). Requires OpenGL 4.3+ compatible GPU.
+- `--steps`: Space-separated list of step sizes (e.g., `13 21`). If omitted, only dots are rendered (faster for GPU mode).
+
 #### Optional (Scene & Geometry)
-- `--N`: Number of points on torus (default: 1500)
+- `--N`: Number of points on torus (default: 1597)
 - `--W`: Image width in pixels (default: 1920)
 - `--H`: Image height in pixels (default: 1080)
 
@@ -133,35 +147,100 @@ Each sphere (dot or line sample) is shaded using **Phong lighting**, which combi
 
 The lighting direction is set to `(-0.5, 0.3, 1.0)` by default, creating natural-looking highlights on the spheres. Per-pixel normals are computed from the ray–sphere intersection geometry, making even small spheres look convincingly 3D.
 
+## GPU Acceleration Mode
+
+### Overview
+
+The `--gpu` flag enables OpenGL compute shader-based ray marching, which uses a fundamentally different rendering approach than the default CPU splatting method.
+
+### How GPU Mode Works
+
+- **Ray Marching**: Each pixel shoots a ray into the scene and marches along it using sphere tracing
+- **Sphere SDF**: Distance to the nearest sphere is computed at each step
+- **Smooth Blending**: Optional smooth minimum blending between spheres (disabled by default for performance)
+- **Phong Shading**: Per-pixel lighting computation on sphere surfaces
+
+### Performance Characteristics
+
+**GPU Mode is best for:**
+- Systems with OpenGL 4.3+ compatible GPUs (Intel HD Graphics 630, NVIDIA, AMD, etc.)
+- Rendering with fewer spheres (dots only mode, no `--steps` argument)
+- Exploring smooth blending effects when enabled
+
+**CPU Mode is better for:**
+- Rendering with many line samples (complex edge networks with `--steps`)
+- Systems without dedicated GPU hardware
+- Guaranteed consistent performance
+
+### GPU Performance Tips
+
+1. **Dots only** (fastest): Omit `--steps` argument
+   ```powershell
+   python torus_net_gpu.py --gpu --out fast.png
+   ```
+
+2. **Simple edges**: Use 1-2 step sizes
+   ```powershell
+   python torus_net_gpu.py --gpu --steps 13 --out medium.png
+   ```
+
+3. **Complex edges**: Many step sizes may be slow on integrated GPUs
+   ```powershell
+   # May be slow with --gpu on Intel HD Graphics
+   python torus_net_gpu.py --steps 1 13 21 34 55 --out complex.png
+   ```
+
+### GPU Requirements
+
+- **Minimum**: OpenGL 4.3 with compute shader support
+- **Tested on**: Intel HD Graphics 630, Mesa llvmpipe (software)
+- **Recommended**: Dedicated GPU (NVIDIA GTX/RTX, AMD Radeon, etc.)
+
+### Troubleshooting
+
+If GPU rendering is slow or times out:
+1. Try dots-only mode (no `--steps`)
+2. Reduce `--N` (number of points)
+3. Use CPU mode instead (omit `--gpu` flag)
+
 ## Colormap Note
 
-The current implementation uses matplotlib's exact magma colormap via `plt.get_cmap("magma")`. Colors are computed in `build_lut()` and converted to a PyTorch tensor for efficient GPU lookup.
+The current implementation uses matplotlib's exact colormap via `plt.get_cmap()`. Colors are computed in `build_lut()` and converted to a PyTorch tensor for efficient GPU lookup.
 
 The colormap is applied with a "pingpong" effect that maps [0, 2π] → [0, 1, 0], creating a seam-free loop from dark (bottom) through bright (middle) and back to dark (top).
 
 ## Performance
 
-- **GPU**: hopefully ~1–2 seconds per frame (1920×1080)
-- **CPU**: ~30–60 seconds per frame
+### CPU Mode (Default)
+- **Typical**: ~10–60 seconds per frame at 1920×1080
+- **Scales with**: Number of spheres (dots + line samples), resolution, anti-aliasing factor
+- **Best for**: Complex edge networks, consistent performance across systems
 
-Rendering time is dominated by the sphere-trace depth pass and per-pixel occlusion tests.
+### GPU Mode (`--gpu` flag)
+- **Dots only** (N=1597, no edges): ~1–5 seconds on dedicated GPU, ~10–30 seconds on integrated GPU
+- **With edges**: Performance depends heavily on GPU hardware
+  - Dedicated GPU: ~5–30 seconds
+  - Integrated GPU (Intel HD 630): May be slow with >1000 spheres
+  - Software rendering (llvmpipe): Very slow, not recommended for production
+
+**Performance bottleneck**: GPU ray marching checks all spheres at each ray step. With line samples, sphere count can reach 4000+, making it compute-intensive.
+
+Rendering time in GPU mode is dominated by the ray marching loop and sphere distance calculations.
 
 ## File Structure
 
 ```
-torus/
-├── torus_net_gpu.py               # Main renderer script
-├── test_shading.py                # Demo test suite
+phyllotaxis-torus/
+├── torus_net_gpu.py               # Main renderer script (CPU & GPU modes)
 ├── requirements.txt               # Python dependencies
 ├── README.md                      # Main documentation (this file)
-├── docs/                          # Detailed documentation
-│   ├── SHADING_INTEGRATION.md    # Technical Phong shading details
-│   ├── SHADING_GUIDE.md          # Visual guide & parameter tuning
-│   ├── PROJECT_STATUS.md         # Complete feature list & status
-│   ├── INTEGRATION_SUMMARY.md    # Integration summary
-│   ├── COMPLETION_CHECKLIST.md   # Status checklist
-│   ├── QUICK_REFERENCE.py        # Command-line examples
-│   └── BUG_FIX.md                # Recent bug fixes
+├── src/                           # Source modules
+│   ├── types.py                   # Scene dataclass and configuration
+│   ├── shade.py                   # Phong shading implementation
+│   └── gpu_renderer.py            # OpenGL GPU renderer (compute shaders)
+├── shaders/                       # OpenGL compute shaders
+│   ├── raymarch.comp              # Main ray marching compute shader
+│   └── common.glsl                # Shared GLSL functions
 ├── png/                           # Output images (auto-created)
 └── json/                          # Metadata exports (auto-created)
 ```
