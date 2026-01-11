@@ -614,6 +614,208 @@ def render(scene: Scene, steps: list[int], out_path: str):
     print(f"[saved] {json_path}")
 
 
+def render_gpu(scene: Scene, steps: list[int], out_path: str):
+    """
+    GPU-accelerated rendering using OpenGL compute shaders.
+    This uses ray marching with smooth blending instead of splatting.
+    """
+    try:
+        from src.gpu_renderer import GPURenderer
+    except ImportError as e:
+        print(f"[error] Failed to import GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        return render(scene, steps, out_path)
+    
+    print(f"[GPU] Initializing OpenGL renderer...")
+    
+    try:
+        # Create GPU renderer
+        gpu_renderer = GPURenderer(scene.W, scene.H)
+        
+        # Print GPU info
+        info = gpu_renderer.gpu_info
+        print(f"[GPU] Vendor: {info['vendor']}")
+        print(f"[GPU] Renderer: {info['renderer']}")
+        print(f"[GPU] OpenGL Version: {info['version']}")
+        print(f"[GPU] GLSL Version: {info['glsl_version']}")
+        
+    except Exception as e:
+        print(f"[error] Failed to initialize GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        gpu_renderer = None
+        return render(scene, steps, out_path)
+    
+    # Organize outputs by file type
+    out_path = Path(out_path)
+    png_dir = Path("png")
+    json_dir = Path("json")
+    png_dir.mkdir(exist_ok=True)
+    json_dir.mkdir(exist_ok=True)
+    
+    png_path = png_dir / out_path.name
+    json_path = json_dir / out_path.with_suffix(".json").name
+    
+    # Build camera
+    cam_np, right_np, up_np, forward_np = build_camera(scene)
+    
+    # Generate phyllotaxis points on CPU
+    device = torch.device("cpu")
+    u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device)
+    P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
+    
+    # Colors (pingpong gnuplot, seam-free)
+    lut = build_lut(device, scene.cmap_name, 256)
+    t_raw = (v % (2.0 * math.pi)) / (2.0 * math.pi)
+    t_pp = pingpong01(t_raw)
+    cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
+    dot_cols = lut[cidx]  # [N,3]
+    
+    # Compute dynamic dot radii based on local density
+    if scene.dot_radius_dynamic:
+        dot_radii = compute_dynamic_radii(
+            v, scene.R, scene.r_inner, 
+            scene.dot_radius_px, 
+            scene.dot_size_min, 
+            scene.dot_size_max
+        )
+    else:
+        dot_radii = torch.full((scene.N,), scene.dot_radius_px, device=device)
+    
+    # Build edges from step sizes
+    edges = []
+    N = scene.N
+    for step in steps:
+        for i in range(N):
+            if i + step < N:
+                edges.append((i, i + step))
+    
+    # Build line samples on surface (E * S points)
+    samples = scene.line_samples_per_edge + 1
+    A = torch.linspace(0.0, 1.0, samples, device=device, dtype=torch.float32)
+    
+    i0 = torch.tensor([e[0] for e in edges], device=device, dtype=torch.int64)
+    i1 = torch.tensor([e[1] for e in edges], device=device, dtype=torch.int64)
+    
+    u0 = u[i0]; v0 = v[i0]
+    u1 = u[i1]; v1 = v[i1]
+    
+    du = wrap_pi_torch(u1 - u0)
+    dv = wrap_pi_torch(v1 - v0)
+    
+    uu = u0[:, None] + du[:, None] * A[None, :]
+    vv = v0[:, None] + dv[:, None] * A[None, :]
+    
+    line_pts = torus_point_from_uv(uu.reshape(-1), vv.reshape(-1), scene.R, scene.r_inner)
+    
+    # Color per edge from midpoint-v (then broadcast to samples)
+    v_mid = v0 + 0.5 * dv
+    t_raw_e = (v_mid % (2.0 * math.pi)) / (2.0 * math.pi)
+    t_pp_e = pingpong01(t_raw_e)
+    eidx = torch.clamp((t_pp_e * 255.0).to(torch.int64), 0, 255)
+    edge_cols = lut[eidx]  # [E,3]
+    line_cols = edge_cols[:, None, :].expand(-1, samples, -1).reshape(-1, 3)
+    
+    # Compute dynamic line radii
+    if scene.line_radius_dynamic:
+        edge_radii = compute_dynamic_radii(
+            v_mid, scene.R, scene.r_inner,
+            scene.line_radius_px,
+            scene.line_size_min,
+            scene.line_size_max
+        )
+        inverted_radii = scene.line_size_max + scene.line_size_min - edge_radii
+        line_radii = inverted_radii[:, None].expand(-1, samples).reshape(-1)
+    else:
+        line_radii = torch.full((len(line_pts),), scene.line_radius_px, device=device)
+    
+    # Combine dots and lines into single sphere list
+    all_centers = torch.cat([line_pts, P], dim=0)
+    all_colors = torch.cat([line_cols, dot_cols], dim=0)
+    
+    # Convert line_radii and dot_radii to world space
+    # For GPU ray marching, we need actual 3D radii, not pixel radii
+    # Use a heuristic: scale pixel radius by a factor based on scene size
+    aspect = scene.W / scene.H
+    world_scale = 0.02  # Approximate world units per pixel at focal distance
+    
+    if isinstance(line_radii, torch.Tensor):
+        line_world_radii = line_radii * world_scale
+    else:
+        line_world_radii = torch.full((len(line_pts),), line_radii * world_scale, device=device)
+    
+    if isinstance(dot_radii, torch.Tensor):
+        dot_world_radii = dot_radii * world_scale
+    else:
+        dot_world_radii = torch.full((len(P),), dot_radii * world_scale, device=device)
+    
+    all_radii = torch.cat([line_world_radii, dot_world_radii], dim=0)
+    
+    # Add alpha channel to colors
+    all_colors_rgba = torch.cat([all_colors, torch.ones((len(all_colors), 1), device=device)], dim=-1)
+    
+    # Convert to numpy for GPU upload
+    centers_np = all_centers.numpy()
+    colors_np = all_colors_rgba.numpy()
+    radii_np = all_radii.numpy()
+    
+    # Upload scene to GPU
+    print(f"[GPU] Uploading {len(centers_np)} spheres to GPU...")
+    
+    try:
+        gpu_renderer.upload_scene(
+            centers=centers_np,
+            colors=colors_np,
+            radii=radii_np,
+            smooth_k=scene.smooth_k,
+            blend_radius=scene.blend_radius_multiplier * np.mean(radii_np),
+            hit_eps=scene.hit_eps,
+            t_max=scene.t_max,
+            max_steps=scene.max_steps,
+            camera_pos=cam_np,
+            camera_right=right_np,
+            camera_up=up_np,
+            camera_forward=forward_np,
+            focal_length=scene.f,
+            light_dir=np.array(scene.light_dir, dtype=np.float32),
+            ambient=scene.ambient,
+            diffuse_strength=scene.diffuse_strength,
+            specular_strength=scene.specular_strength,
+            shininess=scene.shininess,
+        )
+        
+        # Render
+        print(f"[GPU] Ray marching...")
+        img_rgba = gpu_renderer.render()
+        
+        # Convert RGBA to RGB for output
+        img_rgb = img_rgba[:, :, :3]
+        
+        # Cleanup GPU resources
+        gpu_renderer.cleanup()
+        
+    except Exception as e:
+        print(f"[error] GPU rendering failed: {e}")
+        print("[fallback] Using CPU renderer instead")
+        if gpu_renderer:
+            gpu_renderer.cleanup()
+        return render(scene, steps, out_path)
+    
+    # Save output
+    img_rgb = np.clip(img_rgb, 0.0, 1.0)
+    plt.imsave(png_path, img_rgb)
+    print(f"[saved] {png_path}")
+    
+    # Save scene metadata as JSON
+    metadata = {
+        "steps": steps,
+        "scene": asdict(scene),
+        "renderer": "GPU (OpenGL compute shader)",
+    }
+    with open(json_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"[saved] {json_path}")
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, nargs="*", default=[], help="List of step sizes (e.g., --steps 1 13 21). If omitted, only dots are rendered.")
@@ -642,6 +844,8 @@ def parse_args():
     ap.add_argument("--line_size_max", type=float, default=2.5, help="Maximum size multiplier for dynamic lines (default: 2.5)")
     ap.add_argument("--line_alpha", type=float, default=0.40)
     ap.add_argument("--line_samples", type=int, default=44)
+    
+    ap.add_argument("--gpu", action="store_true", help="Use OpenGL GPU acceleration (ray marching with compute shaders)")
 
     return ap.parse_args()
 
@@ -669,8 +873,18 @@ if __name__ == "__main__":
         line_samples_per_edge=args.line_samples,
     )
 
-    render(
-        scene=scene,
-        steps=args.steps,
-        out_path=args.out,
-    )
+    # Choose renderer based on --gpu flag
+    if args.gpu:
+        print("[mode] GPU rendering (OpenGL compute shaders)")
+        render_gpu(
+            scene=scene,
+            steps=args.steps,
+            out_path=args.out,
+        )
+    else:
+        print("[mode] CPU rendering (PyTorch)")
+        render(
+            scene=scene,
+            steps=args.steps,
+            out_path=args.out,
+        )

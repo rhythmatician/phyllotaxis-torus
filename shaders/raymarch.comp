@@ -1,0 +1,238 @@
+#version 430
+
+// Work group size
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Uniforms (camera and rendering parameters)
+uniform int numSpheres;
+uniform float smooth_k;
+uniform float blend_radius;
+uniform float hit_eps;
+uniform float t_max;
+uniform int max_steps;
+uniform vec3 camera_pos;
+uniform vec3 camera_right;
+uniform vec3 camera_up;
+uniform vec3 camera_forward;
+uniform float focal_length;
+uniform int width;
+uniform int height;
+uniform vec3 light_dir;
+uniform float ambient;
+uniform float diffuse_strength;
+uniform float specular_strength;
+uniform float shininess;
+
+// Shader Storage Buffer Objects (SSBOs)
+layout(std430, binding = 0) buffer SpheresCenters {
+    vec3 sphere_centers[];
+};
+
+layout(std430, binding = 1) buffer SpheresColors {
+    vec4 sphere_colors[];
+};
+
+layout(std430, binding = 2) buffer SpheresRadii {
+    float sphere_radii[];
+};
+
+layout(std430, binding = 3) buffer OutputImage {
+    vec4 output_pixels[];
+};
+
+// Smooth minimum function (Inigo Quilez formula)
+float smooth_min(float d1, float d2, float k) {
+    float h = clamp(k - abs(d1 - d2), 0.0, k) / k;
+    return min(d1, d2) - h * h * k / 6.0;
+}
+
+// Sphere SDF
+float sphere_sdf(vec3 pos, vec3 center, float radius) {
+    return length(pos - center) - radius;
+}
+
+// Compute smooth SDF for all spheres
+float spheres_smooth_sdf(vec3 pos) {
+    if (numSpheres == 0) {
+        return 1e10; // Very far if no spheres
+    }
+    
+    float result = sphere_sdf(pos, sphere_centers[0], sphere_radii[0]);
+    
+    for (int i = 1; i < numSpheres; i++) {
+        float d = sphere_sdf(pos, sphere_centers[i], sphere_radii[i]);
+        result = smooth_min(result, d, smooth_k);
+    }
+    
+    return result;
+}
+
+// Estimate normal using gradient
+vec3 estimate_normal(vec3 pos, float eps) {
+    vec2 e = vec2(eps, 0.0);
+    return normalize(vec3(
+        spheres_smooth_sdf(pos + e.xyy) - spheres_smooth_sdf(pos - e.xyy),
+        spheres_smooth_sdf(pos + e.yxy) - spheres_smooth_sdf(pos - e.yxy),
+        spheres_smooth_sdf(pos + e.yyx) - spheres_smooth_sdf(pos - e.yyx)
+    ));
+}
+
+// Phong shading
+vec3 phong_shade(
+    vec3 base_color,
+    vec3 normal,
+    vec3 view_dir,
+    vec3 light_dir_param,
+    float ambient_param,
+    float diffuse_strength_param,
+    float specular_strength_param,
+    float shininess_param
+) {
+    // Normalize inputs
+    vec3 light_dir_norm = normalize(light_dir_param);
+    vec3 normal_norm = normalize(normal);
+    vec3 view_dir_norm = normalize(view_dir);
+    
+    // Ambient component
+    vec3 ambient_col = ambient_param * base_color;
+    
+    // Diffuse component
+    float diff = max(dot(normal_norm, light_dir_norm), 0.0);
+    vec3 diffuse_col = diffuse_strength_param * diff * base_color;
+    
+    // Specular component (Blinn-Phong)
+    vec3 half_vec = normalize(view_dir_norm + light_dir_norm);
+    float spec = max(dot(normal_norm, half_vec), 0.0);
+    float spec_pow = pow(spec, shininess_param);
+    vec3 specular_col = specular_strength_param * spec_pow * vec3(1.0);
+    
+    return ambient_col + diffuse_col + specular_col;
+}
+
+// Get color at hit point (blend nearby sphere colors)
+vec4 get_color_at_point(vec3 pos, float blend_dist) {
+    vec4 total_color = vec4(0.0);
+    float total_weight = 0.0;
+    
+    for (int i = 0; i < numSpheres; i++) {
+        float dist = length(pos - sphere_centers[i]);
+        if (dist < blend_dist) {
+            float weight = 1.0 - (dist / blend_dist);
+            weight = weight * weight; // Quadratic falloff
+            total_color += sphere_colors[i] * weight;
+            total_weight += weight;
+        }
+    }
+    
+    if (total_weight > 0.0) {
+        return total_color / total_weight;
+    }
+    
+    // Fallback: find nearest sphere
+    float min_dist = 1e10;
+    int nearest = 0;
+    for (int i = 0; i < numSpheres; i++) {
+        float dist = length(pos - sphere_centers[i]);
+        if (dist < min_dist) {
+            min_dist = dist;
+            nearest = i;
+        }
+    }
+    
+    return sphere_colors[nearest];
+}
+
+void main() {
+    // Get pixel coordinates
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    
+    // Check bounds
+    if (pixel.x >= width || pixel.y >= height) {
+        return;
+    }
+    
+    // Compute ray direction for this pixel
+    float aspect = float(width) / float(height);
+    
+    // Normalized device coordinates [-1, 1] x [-1, 1]
+    float x_ndc = ((float(pixel.x) + 0.5) / float(width)) * 2.0 - 1.0;
+    float y_ndc = 1.0 - ((float(pixel.y) + 0.5) / float(height)) * 2.0;
+    
+    // Apply aspect ratio
+    x_ndc *= aspect;
+    
+    // Compute ray direction in camera space
+    float dx = x_ndc / focal_length;
+    float dy = y_ndc / focal_length;
+    float dz = 1.0;
+    
+    // Transform to world space
+    vec3 ray_dir = normalize(
+        dx * camera_right +
+        dy * camera_up +
+        dz * camera_forward
+    );
+    
+    vec3 ray_origin = camera_pos;
+    
+    // Ray marching with sphere tracing
+    float t = 0.0;
+    bool hit = false;
+    vec3 hit_pos;
+    
+    for (int step = 0; step < max_steps; step++) {
+        vec3 pos = ray_origin + t * ray_dir;
+        
+        // Compute smooth SDF
+        float sdf = spheres_smooth_sdf(pos);
+        
+        if (sdf < hit_eps) {
+            // Hit!
+            hit = true;
+            hit_pos = pos;
+            break;
+        }
+        
+        if (t > t_max) {
+            break;
+        }
+        
+        // Sphere tracing step
+        t += sdf;
+    }
+    
+    // Compute output color
+    vec4 color;
+    
+    if (hit) {
+        // Compute normal at hit point
+        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0);
+        
+        // Get base color (blend nearby spheres)
+        vec4 base_color = get_color_at_point(hit_pos, blend_radius);
+        
+        // Compute view direction (from hit point toward camera)
+        vec3 view_dir = normalize(camera_pos - hit_pos);
+        
+        // Apply Phong shading
+        vec3 shaded_color = phong_shade(
+            base_color.rgb,
+            normal,
+            view_dir,
+            light_dir,
+            ambient,
+            diffuse_strength,
+            specular_strength,
+            shininess
+        );
+        
+        color = vec4(shaded_color, base_color.a);
+    } else {
+        // Miss - output background (white)
+        color = vec4(1.0, 1.0, 1.0, 1.0);
+    }
+    
+    // Write to output buffer
+    int idx = pixel.y * width + pixel.x;
+    output_pixels[idx] = color;
+}
