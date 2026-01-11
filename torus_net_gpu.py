@@ -743,8 +743,36 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     all_colors = torch.cat([line_cols, dot_cols], dim=0)
     
     # Convert line_radii and dot_radii to world space
-    # For GPU ray marching, we need actual 3D radii, not pixel radii.
-    #
+    # Derive world_scale from scene parameters when available, otherwise fall back
+    # to the previous heuristic value.
+    focal_length = getattr(scene, "focal_length", None)
+    camera_distance = getattr(scene, "camera_distance", None)
+    if (
+        isinstance(focal_length, (int, float))
+        and isinstance(camera_distance, (int, float))
+        and focal_length > 0
+        and camera_distance > 0
+    ):
+        # Similar triangles: radius_world / camera_distance ≈ radius_image / focal_length
+        # => world units per "pixel" ≈ camera_distance / focal_length
+        world_scale = camera_distance / focal_length
+    else:
+        # Fallback to the original heuristic if scene parameters are unavailable
+        world_scale = 0.02
+    focal_length = getattr(scene, "focal_length", None)
+    camera_distance = getattr(scene, "camera_distance", None)
+    if (
+        isinstance(focal_length, (int, float))
+        and isinstance(camera_distance, (int, float))
+        and focal_length > 0
+        and camera_distance > 0
+    ):
+        # Similar triangles: radius_world / camera_distance ≈ radius_image / focal_length
+        # => world units per "pixel" ≈ camera_distance / focal_length
+        world_scale = camera_distance / focal_length
+    else:
+        # Fallback to the original heuristic if scene parameters are unavailable
+        world_scale = 0.02
     # Heuristic for world_scale:
     # --------------------------
     # `world_scale` represents "approximate world units per screen pixel at
