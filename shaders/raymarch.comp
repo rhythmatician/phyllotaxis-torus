@@ -72,9 +72,9 @@ float spheres_smooth_sdf(vec3 pos) {
         return 1e10;
     }
     
-    float result = sphere_sdf(pos, sphere_centers[0], sphere_radii[0]);
+    float result = 1e10;
     
-    for (int i = 1; i < numSpheres; i++) {
+    for (int i = 0; i < numSpheres; i++) {
         float d = sphere_sdf(pos, sphere_centers[i], sphere_radii[i]);
         result = smooth_min(result, d, smooth_k);
     }

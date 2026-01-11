@@ -112,13 +112,14 @@ float torus_inside_shell_sdf(vec3 pos, float R, float r, float thickness) {
     return op_difference(shell_outer, -shell_inner);
 }
 
-// Single edge as ink line on inside surface
+// Single edge as ink line on the interior surface of the torus
+// (not floating in the interior volume, but on the inside-facing surface)
 float edge_ink_sdf(vec3 pos, vec3 a, vec3 b, float cap_radius, float R, float r, float thickness) {
     // Capsule tube
     float capsule = capsule_sdf(pos, a, b, cap_radius);
-    // Inside shell band
+    // Inside shell band (a thin band on the interior-facing surface of the torus)
     float shell = torus_inside_shell_sdf(pos, R, r, thickness);
-    // Intersection: capsule AND inside shell
+    // Intersection: capsule AND inside shell = ink line constrained to interior surface
     return op_intersection(capsule, shell);
 }
 
@@ -150,8 +151,8 @@ float nodes_sdf(vec3 pos) {
         return 1e10;
     }
     
-    float result = node_sphere_sdf(pos, 0);
-    for (int i = 1; i < numNodes; i++) {
+    float result = 1e10;
+    for (int i = 0; i < numNodes; i++) {
         float d = node_sphere_sdf(pos, i);
         result = op_union(result, d);
     }

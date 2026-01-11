@@ -629,6 +629,7 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     
     print(f"[GPU] Initializing OpenGL renderer...")
     
+    gpu_renderer = None  # Initialize to avoid NameError in exception handlers
     try:
         # Create GPU renderer
         gpu_renderer = GPURenderer(scene.W, scene.H)
@@ -742,9 +743,24 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     all_colors = torch.cat([line_cols, dot_cols], dim=0)
     
     # Convert line_radii and dot_radii to world space
-    # For GPU ray marching, we need actual 3D radii, not pixel radii
-    # Use a heuristic: scale pixel radius by a factor based on scene size
-    world_scale = 0.02  # Approximate world units per pixel at focal distance
+    # For GPU ray marching, we need actual 3D radii, not pixel radii.
+    #
+    # Heuristic for world_scale:
+    # --------------------------
+    # `world_scale` represents "approximate world units per screen pixel at
+    # the focal distance". This script uses a normalized torus where the
+    # outer radius `scene.R` is O(1) in world units, so a pixel radius of a
+    # few pixels should produce small but visible spheres on the torus
+    # surface. Empirically, a factor of 0.02 world units per pixel gives
+    # visually pleasing results under the default camera and resolution.
+    #
+    # To avoid a hard-coded magic number, callers may optionally provide
+    # `scene.world_scale` to override this default when using different scene
+    # scales, camera parameters, or image resolutions. If that attribute is
+    # not present, we fall back to the historical default of 0.02 to preserve
+    # existing behavior.
+    world_scale_default = 0.02
+    world_scale = getattr(scene, "world_scale", world_scale_default)
     
     line_world_radii = pixel_radii_to_world(line_radii, len(line_pts), world_scale, device)
     dot_world_radii = pixel_radii_to_world(dot_radii, len(P), world_scale, device)
@@ -848,6 +864,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     
     print(f"[SDF-GPU] Initializing OpenGL SDF renderer...")
     
+    gpu_renderer = None  # Initialize to avoid NameError in exception handlers
     try:
         # Create SDF GPU renderer
         gpu_renderer = SDFGPURenderer(scene.W, scene.H)
@@ -906,7 +923,6 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         u0 = u[i0]; v0 = v[i0]
         u1 = u[i1]; v1 = v[i1]
         
-        du = wrap_pi_torch(u1 - u0)
         dv = wrap_pi_torch(v1 - v0)
         
         v_mid = v0 + 0.5 * dv
@@ -929,20 +945,25 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         edge_colors_rgba = np.empty((0, 4), dtype=np.float32)
     
     # Calculate SDF parameters
+    # Use the same world_scale approach as render_gpu for consistency
+    world_scale_default = 0.02
+    world_scale = getattr(scene, "world_scale", world_scale_default)
+    
     # Node radius: similar to dot radius in world space
-    world_scale = 0.02
     node_radius = scene.dot_radius_px * world_scale
     
-    # Edge radius: similar to line radius
-    edge_radius = scene.line_radius_px * world_scale * 0.5  # Thinner for capsules
+    # Capsules tend to render optically thicker than equivalent line/sphere chains,
+    # so we deliberately scale them down by a fixed ratio in world space.
+    edge_to_line_radius_ratio = 0.5
+    edge_radius = scene.line_radius_px * world_scale * edge_to_line_radius_ratio
     
     # Shell thickness: should be thin enough to see detail.
     # Allow overriding the default 5% of minor radius via scene.shell_thickness_factor.
     shell_thickness_factor = getattr(scene, "shell_thickness_factor", 0.05)
     shell_thickness = scene.r_inner * shell_thickness_factor
     
-    # Smooth k: use scene's smooth_k for junctions
-    smooth_k = scene.smooth_k if hasattr(scene, 'smooth_k') else 0.1
+    # Smooth k: use scene's smooth_k for junctions (fallback to 0.1 if absent)
+    smooth_k = getattr(scene, "smooth_k", 0.1)
     
     # Upload scene to GPU
     print(f"[SDF-GPU] Uploading {len(node_positions_np)} nodes and {len(edge_indices_np)} edges...")
@@ -993,8 +1014,9 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         if gpu_renderer:
             try:
                 gpu_renderer.cleanup()
-            except Exception:
-                pass
+            except Exception as cleanup_err:
+                # Ignore cleanup errors in fallback path, but log for diagnostics
+                print(f"[warning] GPU cleanup failed during fallback after render error: {cleanup_err}")
         render(scene, steps, out_path)
         return
     

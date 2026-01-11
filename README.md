@@ -93,7 +93,6 @@ This makes it easy to reproduce renders or tweak existing ones!
 
 #### Optional (Rendering Mode)
 - `--gpu`: Use OpenGL GPU acceleration (ray marching with compute shaders). Requires OpenGL 4.3+ compatible GPU.
-- `--smooth`: Enable smooth blending between all spheres (GPU mode only, computationally expensive)
 - `--sdf`: Use SDF-based GPU rendering with proper primitives (capsule lines on torus interior, not sampled spheres) - **RECOMMENDED**
 - `--smooth`: Enable smooth blending between all spheres (GPU mode only, computationally expensive)
 - `--smooth_k`: Smoothing factor for smooth minimum (default: 0.3, higher = more blending)
