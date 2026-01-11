@@ -863,6 +863,8 @@ def parse_args():
     ap.add_argument("--line_samples", type=int, default=44)
     
     ap.add_argument("--gpu", action="store_true", help="Use OpenGL GPU acceleration (ray marching with compute shaders)")
+    ap.add_argument("--smooth", action="store_true", help="Enable smooth blending between spheres (GPU mode only, may be slow with many spheres)")
+    ap.add_argument("--smooth_k", type=float, default=0.3, help="Smoothing factor for smooth minimum (default: 0.3, higher = more blending)")
 
     return ap.parse_args()
 
@@ -888,6 +890,8 @@ if __name__ == "__main__":
         line_size_max=args.line_size_max,
         line_alpha=args.line_alpha,
         line_samples_per_edge=args.line_samples,
+        enable_smooth_blend=args.smooth,
+        smooth_k=args.smooth_k,
     )
 
     # Choose renderer based on --gpu flag

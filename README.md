@@ -45,6 +45,11 @@ Generate with GPU acceleration (OpenGL compute shaders):
 python torus_net_gpu.py --gpu --steps 13 21 --out fibonacci_gpu.png
 ```
 
+Generate with smooth blending (GPU mode only):
+```powershell
+python torus_net_gpu.py --gpu --smooth --out smooth_blend.png
+```
+
 Generate with nearest neighbors (step size 1):
 ```powershell
 python torus_net_gpu.py --steps 1 --out neighbors.png
@@ -83,6 +88,8 @@ This makes it easy to reproduce renders or tweak existing ones!
 
 #### Optional (Rendering Mode)
 - `--gpu`: Use OpenGL GPU acceleration (ray marching with compute shaders). Requires OpenGL 4.3+ compatible GPU.
+- `--smooth`: Enable smooth blending between all spheres (GPU mode only, computationally expensive)
+- `--smooth_k`: Smoothing factor for smooth minimum (default: 0.3, higher = more blending)
 - `--steps`: Space-separated list of step sizes (e.g., `13 21`). If omitted, only dots are rendered (faster for GPU mode).
 
 #### Optional (Scene & Geometry)
@@ -157,8 +164,29 @@ The `--gpu` flag enables OpenGL compute shader-based ray marching, which uses a 
 
 - **Ray Marching**: Each pixel shoots a ray into the scene and marches along it using sphere tracing
 - **Sphere SDF**: Distance to the nearest sphere is computed at each step
-- **Smooth Blending**: Optional smooth minimum blending between spheres (disabled by default for performance)
+- **Smooth Blending**: Optional smooth minimum blending between ALL spheres (dots AND lines) using Inigo Quilez's formula
+  - Enable with `--smooth` flag (GPU mode only)
+  - Disabled by default for performance
+  - When enabled, creates organic blob-like connections between nearby spheres
+  - Adjust smoothness with `--smooth_k` parameter (default 0.3, higher = more blending)
 - **Phong Shading**: Per-pixel lighting computation on sphere surfaces
+
+### Smooth Blending Feature
+
+The `--smooth` flag enables smooth minimum blending in GPU mode, which merges spheres (both dots and line samples) into a unified organic surface:
+
+```powershell
+# Enable smooth blending (slower but creates unified surfaces)
+python torus_net_gpu.py --gpu --smooth --out organic.png
+
+# Adjust blend smoothness (higher k = more blending)
+python torus_net_gpu.py --gpu --smooth --smooth_k 0.5 --out very_smooth.png
+```
+
+**Note**: Smooth blending is computationally expensive. It works best with:
+- Smaller datasets (N < 500)
+- Dots only (no `--steps` argument)
+- Dedicated GPU hardware
 
 ### Performance Characteristics
 
