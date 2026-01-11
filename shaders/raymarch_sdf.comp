@@ -153,10 +153,18 @@ vec3 project_to_inner_shell(vec3 pos, float R, float r) {
 }
 
 // Edge as line segment between two nodes
-// The endpoints are already on the torus surface, just connect them with a capsule
+// The endpoints are on the torus surface, but the straight-line capsule cuts through space.
+// We need to INTERSECT the capsule with the torus surface to constrain it.
 float edge_ink_sdf(vec3 pos, vec3 a, vec3 b, float line_width, float R, float r, float thickness) {
-    // Simple capsule between the two endpoint positions
-    return capsule_sdf(pos, a, b, line_width);
+    // 3D capsule between endpoints
+    float capsule = capsule_sdf(pos, a, b, line_width);
+    
+    // Torus surface
+    float torus = torus_sdf(pos, R, r);
+    
+    // INTERSECTION: only where the capsule AND torus surface meet
+    // This constrains the line to follow the torus surface
+    return op_intersection(capsule, torus);
 }
 
 // All edges as ink network
