@@ -94,7 +94,7 @@ class Scene:
     r_outer: float = 2.6
     r_inner: float = 2.3
 
-    N: int = 1500
+    N: int = 1597  # Fibonacci number for seamless phyllotaxis pattern
 
     W: int = 1920
     H: int = 1080
@@ -709,7 +709,7 @@ def parse_args():
     ap.add_argument("--steps", type=int, nargs="*", default=[], help="List of step sizes (e.g., --steps 1 13 21). If omitted, only dots are rendered.")
     ap.add_argument("--out", type=str, required=True)
 
-    ap.add_argument("--N", type=int, default=1500)
+    ap.add_argument("--N", type=int, default=1597)  # Fibonacci number for seamless phyllotaxis pattern
     ap.add_argument("--W", type=int, default=1920)
     ap.add_argument("--H", type=int, default=1080)
     ap.add_argument("--f", type=float, default=1.2)
