@@ -6,6 +6,10 @@ temp.*
 tmp*
 tmp/
 
+# Test output files
+test_output/*.json
+test_output/*.png
+
 # Output files
 json/*.json
 png/*.png
@@ -18,3 +22,6 @@ docs/*
 
 # Smoothing demonstrations
 smooth_min_*.*
+
+# VS Code settings
+.vscode/settings.json
