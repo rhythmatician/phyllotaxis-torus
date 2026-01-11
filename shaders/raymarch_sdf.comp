@@ -1,0 +1,381 @@
+#version 430
+
+// Work group size
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Uniforms (camera and rendering parameters)
+uniform int numNodes;
+uniform int numEdges;
+uniform float torus_R;          // Major radius
+uniform float torus_r;          // Minor radius
+uniform float shell_thickness;   // Thickness of inside shell band
+uniform float node_radius;      // Radius of node spheres
+uniform float edge_radius;      // Radius of edge capsules
+uniform float smooth_k;         // Smoothing factor for junctions
+uniform float hit_eps;
+uniform float t_max;
+uniform int max_steps;
+uniform vec3 camera_pos;
+uniform vec3 camera_right;
+uniform vec3 camera_up;
+uniform vec3 camera_forward;
+uniform float focal_length;
+uniform int width;
+uniform int height;
+uniform vec3 light_dir;
+uniform float ambient;
+uniform float diffuse_strength;
+uniform float specular_strength;
+uniform float shininess;
+
+// Shader Storage Buffer Objects (SSBOs)
+layout(std430, binding = 0) buffer NodePositions {
+    vec3 node_positions[];  // 3D positions of nodes on torus surface
+};
+
+layout(std430, binding = 1) buffer NodeColors {
+    vec4 node_colors[];     // RGBA colors for nodes
+};
+
+layout(std430, binding = 2) buffer EdgeIndices {
+    ivec2 edge_indices[];   // Pairs of node indices (i0, i1)
+};
+
+layout(std430, binding = 3) buffer EdgeColors {
+    vec4 edge_colors[];     // RGBA colors for edges
+};
+
+layout(std430, binding = 4) buffer OutputImage {
+    vec4 output_pixels[];
+};
+
+// ============================================================================
+// SDF Primitives
+// ============================================================================
+
+// Torus SDF
+float torus_sdf(vec3 pos, float R, float r) {
+    vec2 q = vec2(length(pos.xy) - R, pos.z);
+    return length(q) - r;
+}
+
+// Sphere SDF
+float sphere_sdf(vec3 pos, vec3 center, float radius) {
+    return length(pos - center) - radius;
+}
+
+// Capsule SDF (line segment with rounded ends)
+float capsule_sdf(vec3 pos, vec3 a, vec3 b, float radius) {
+    vec3 pa = pos - a;
+    vec3 ba = b - a;
+    float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    return length(pa - ba * h) - radius;
+}
+
+// ============================================================================
+// Boolean Operations
+// ============================================================================
+
+// Union
+float op_union(float d1, float d2) {
+    return min(d1, d2);
+}
+
+// Smooth union (Inigo Quilez polynomial smooth min)
+float op_smooth_union(float d1, float d2, float k) {
+    float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
+}
+
+// Intersection
+float op_intersection(float d1, float d2) {
+    return max(d1, d2);
+}
+
+// Difference (subtract d2 from d1)
+float op_difference(float d1, float d2) {
+    return max(d1, -d2);
+}
+
+// ============================================================================
+// Scene SDF
+// ============================================================================
+
+// Inside shell band of torus (only inner surface)
+float torus_inside_shell_sdf(vec3 pos, float R, float r, float thickness) {
+    float torus_dist = torus_sdf(pos, R, r);
+    // Inside shell: torus surface moved inward by thickness
+    // We want points that are inside the torus (dist < 0) but within thickness distance
+    float shell_inner = torus_dist + thickness;
+    float shell_outer = torus_dist;
+    // Shell band is the intersection of "inside torus" and "outside inner boundary"
+    return op_difference(shell_outer, -shell_inner);
+}
+
+// Single edge as ink line on inside surface
+float edge_ink_sdf(vec3 pos, vec3 a, vec3 b, float cap_radius, float R, float r, float thickness) {
+    // Capsule tube
+    float capsule = capsule_sdf(pos, a, b, cap_radius);
+    // Inside shell band
+    float shell = torus_inside_shell_sdf(pos, R, r, thickness);
+    // Intersection: capsule AND inside shell
+    return op_intersection(capsule, shell);
+}
+
+// All edges as ink network
+float edges_network_sdf(vec3 pos) {
+    if (numEdges == 0) {
+        return 1e10;
+    }
+    
+    float result = 1e10;
+    for (int i = 0; i < numEdges; i++) {
+        ivec2 edge = edge_indices[i];
+        vec3 a = node_positions[edge.x];
+        vec3 b = node_positions[edge.y];
+        float d = edge_ink_sdf(pos, a, b, edge_radius, torus_R, torus_r, shell_thickness);
+        result = op_union(result, d);
+    }
+    return result;
+}
+
+// Single node sphere
+float node_sphere_sdf(vec3 pos, int idx) {
+    return sphere_sdf(pos, node_positions[idx], node_radius);
+}
+
+// All node spheres
+float nodes_sdf(vec3 pos) {
+    if (numNodes == 0) {
+        return 1e10;
+    }
+    
+    float result = node_sphere_sdf(pos, 0);
+    for (int i = 1; i < numNodes; i++) {
+        float d = node_sphere_sdf(pos, i);
+        result = op_union(result, d);
+    }
+    return result;
+}
+
+// Combined scene: smooth union at junctions
+float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
+    // hit_type: 0 = node, 1 = edge, 2 = torus shell (background)
+    // hit_idx: index of node or edge
+    
+    float nodes_dist = nodes_sdf(pos);
+    float edges_dist = edges_network_sdf(pos);
+    float torus_dist = torus_sdf(pos, torus_R, torus_r);
+    
+    // Smooth union between nodes and edges at junctions
+    float ink_dist = op_smooth_union(nodes_dist, edges_dist, smooth_k);
+    
+    // Choose closest feature
+    if (ink_dist < torus_dist) {
+        // Hit ink (node or edge)
+        if (nodes_dist < edges_dist) {
+            hit_type = 0;  // Node
+            // Find which node
+            hit_idx = 0;
+            float min_dist = node_sphere_sdf(pos, 0);
+            for (int i = 1; i < numNodes; i++) {
+                float d = node_sphere_sdf(pos, i);
+                if (d < min_dist) {
+                    min_dist = d;
+                    hit_idx = i;
+                }
+            }
+        } else {
+            hit_type = 1;  // Edge
+            // Find which edge (approximate - closest endpoint)
+            hit_idx = 0;
+            float min_dist = 1e10;
+            for (int i = 0; i < numEdges; i++) {
+                ivec2 edge = edge_indices[i];
+                vec3 a = node_positions[edge.x];
+                vec3 b = node_positions[edge.y];
+                vec3 mid = (a + b) * 0.5;
+                float d = length(pos - mid);
+                if (d < min_dist) {
+                    min_dist = d;
+                    hit_idx = i;
+                }
+            }
+        }
+        return ink_dist;
+    } else {
+        hit_type = 2;  // Torus shell
+        hit_idx = -1;
+        return torus_dist;
+    }
+}
+
+// ============================================================================
+// Shading
+// ============================================================================
+
+// Estimate normal using gradient
+vec3 estimate_normal(vec3 pos, float eps) {
+    vec2 e = vec2(eps, 0.0);
+    int dummy_type, dummy_idx;
+    return normalize(vec3(
+        scene_sdf(pos + e.xyy, dummy_type, dummy_idx) - scene_sdf(pos - e.xyy, dummy_type, dummy_idx),
+        scene_sdf(pos + e.yxy, dummy_type, dummy_idx) - scene_sdf(pos - e.yxy, dummy_type, dummy_idx),
+        scene_sdf(pos + e.yyx, dummy_type, dummy_idx) - scene_sdf(pos - e.yyx, dummy_type, dummy_idx)
+    ));
+}
+
+// Phong shading
+vec3 phong_shade(
+    vec3 base_color,
+    vec3 normal,
+    vec3 view_dir,
+    vec3 light_dir_param,
+    float ambient_param,
+    float diffuse_strength_param,
+    float specular_strength_param,
+    float shininess_param
+) {
+    // Normalize inputs
+    vec3 light_dir_norm = normalize(light_dir_param);
+    vec3 normal_norm = normalize(normal);
+    vec3 view_dir_norm = normalize(view_dir);
+    
+    // Ambient component
+    vec3 ambient_col = ambient_param * base_color;
+    
+    // Diffuse component
+    float diff = max(dot(normal_norm, light_dir_norm), 0.0);
+    vec3 diffuse_col = diffuse_strength_param * diff * base_color;
+    
+    // Specular component (Blinn-Phong)
+    vec3 half_vec = normalize(view_dir_norm + light_dir_norm);
+    float spec = max(dot(normal_norm, half_vec), 0.0);
+    float spec_pow = pow(spec, shininess_param);
+    vec3 specular_col = specular_strength_param * spec_pow * vec3(1.0);
+    
+    return ambient_col + diffuse_col + specular_col;
+}
+
+// Get color based on hit type and index
+vec4 get_hit_color(int hit_type, int hit_idx) {
+    if (hit_type == 0) {
+        // Node
+        if (hit_idx >= 0 && hit_idx < numNodes) {
+            return node_colors[hit_idx];
+        }
+    } else if (hit_type == 1) {
+        // Edge
+        if (hit_idx >= 0 && hit_idx < numEdges) {
+            return edge_colors[hit_idx];
+        }
+    } else {
+        // Torus shell - dark gray
+        return vec4(0.2, 0.2, 0.2, 1.0);
+    }
+    return vec4(1.0);  // White fallback
+}
+
+// ============================================================================
+// Main Ray Marching
+// ============================================================================
+
+void main() {
+    // Get pixel coordinates
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    
+    // Check bounds
+    if (pixel.x >= width || pixel.y >= height) {
+        return;
+    }
+    
+    // Compute ray direction for this pixel
+    float aspect = float(width) / float(height);
+    
+    // Normalized device coordinates [-1, 1] x [-1, 1]
+    float x_ndc = ((float(pixel.x) + 0.5) / float(width)) * 2.0 - 1.0;
+    float y_ndc = 1.0 - ((float(pixel.y) + 0.5) / float(height)) * 2.0;
+    
+    // Apply aspect ratio
+    x_ndc *= aspect;
+    
+    // Compute ray direction in camera space
+    float dx = x_ndc / focal_length;
+    float dy = y_ndc / focal_length;
+    float dz = 1.0;
+    
+    // Transform to world space
+    vec3 ray_dir = normalize(
+        dx * camera_right +
+        dy * camera_up +
+        dz * camera_forward
+    );
+    
+    vec3 ray_origin = camera_pos;
+    
+    // Ray marching with sphere tracing
+    float t = 0.0;
+    bool hit = false;
+    vec3 hit_pos;
+    int hit_type = -1;
+    int hit_idx = -1;
+    
+    for (int step = 0; step < max_steps; step++) {
+        vec3 pos = ray_origin + t * ray_dir;
+        
+        // Compute scene SDF
+        int temp_type, temp_idx;
+        float sdf = scene_sdf(pos, temp_type, temp_idx);
+        
+        if (sdf < hit_eps) {
+            // Hit!
+            hit = true;
+            hit_pos = pos;
+            hit_type = temp_type;
+            hit_idx = temp_idx;
+            break;
+        }
+        
+        if (t > t_max) {
+            break;
+        }
+        
+        // Sphere tracing step
+        t += max(sdf, hit_eps * 0.5);  // Prevent tiny steps
+    }
+    
+    // Compute output color
+    vec4 color;
+    
+    if (hit) {
+        // Compute normal at hit point
+        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0);
+        
+        // Get base color
+        vec4 base_color = get_hit_color(hit_type, hit_idx);
+        
+        // Compute view direction (from hit point toward camera)
+        vec3 view_dir = normalize(camera_pos - hit_pos);
+        
+        // Apply Phong shading
+        vec3 shaded_color = phong_shade(
+            base_color.rgb,
+            normal,
+            view_dir,
+            light_dir,
+            ambient,
+            diffuse_strength,
+            specular_strength,
+            shininess
+        );
+        
+        color = vec4(shaded_color, base_color.a);
+    } else {
+        // Miss - output background (white)
+        color = vec4(1.0, 1.0, 1.0, 1.0);
+    }
+    
+    // Write to output buffer
+    int idx = pixel.y * width + pixel.x;
+    output_pixels[idx] = color;
+}

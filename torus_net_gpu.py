@@ -833,6 +833,185 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     print(f"[saved] {json_path}")
 
 
+def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
+    """
+    SDF-based GPU rendering using OpenGL compute shaders.
+    Uses proper SDF primitives (capsules, torus shell) instead of sampled spheres.
+    """
+    try:
+        from src.sdf_gpu_renderer import SDFGPURenderer
+    except ImportError as e:
+        print(f"[error] Failed to import SDF GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        render(scene, steps, out_path)
+        return
+    
+    print(f"[SDF-GPU] Initializing OpenGL SDF renderer...")
+    
+    try:
+        # Create SDF GPU renderer
+        gpu_renderer = SDFGPURenderer(scene.W, scene.H)
+        
+        # Print GPU info
+        info = gpu_renderer.gpu_info
+        print(f"[SDF-GPU] Vendor: {info['vendor']}")
+        print(f"[SDF-GPU] Renderer: {info['renderer']}")
+        print(f"[SDF-GPU] OpenGL Version: {info['version']}")
+        print(f"[SDF-GPU] GLSL Version: {info['glsl_version']}")
+        
+    except Exception as e:
+        print(f"[error] Failed to initialize SDF GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        render(scene, steps, out_path)
+        return
+    
+    # Organize outputs by file type
+    out_path = Path(out_path)
+    png_dir = Path("png")
+    json_dir = Path("json")
+    png_dir.mkdir(exist_ok=True)
+    json_dir.mkdir(exist_ok=True)
+    
+    png_path = png_dir / out_path.name
+    json_path = json_dir / out_path.with_suffix(".json").name
+    
+    # Build camera
+    cam_np, right_np, up_np, forward_np = build_camera(scene)
+    
+    # Generate phyllotaxis points on CPU
+    device = torch.device("cpu")
+    u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device)
+    P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
+    
+    # Colors (pingpong colormap, seam-free)
+    lut = build_lut(device, scene.cmap_name, 256)
+    t_raw = (v % (2.0 * math.pi)) / (2.0 * math.pi)
+    t_pp = pingpong01(t_raw)
+    cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
+    node_cols = lut[cidx]  # [N,3]
+    
+    # Build edge list (not sampled - just endpoint indices)
+    edges = []
+    N = scene.N
+    for step in steps:
+        for i in range(N):
+            if i + step < N:
+                edges.append((i, i + step))
+    
+    # Edge colors from midpoint-v
+    if len(edges) > 0:
+        i0 = torch.tensor([e[0] for e in edges], device=device, dtype=torch.int64)
+        i1 = torch.tensor([e[1] for e in edges], device=device, dtype=torch.int64)
+        
+        u0 = u[i0]; v0 = v[i0]
+        u1 = u[i1]; v1 = v[i1]
+        
+        du = wrap_pi_torch(u1 - u0)
+        dv = wrap_pi_torch(v1 - v0)
+        
+        v_mid = v0 + 0.5 * dv
+        t_raw_e = (v_mid % (2.0 * math.pi)) / (2.0 * math.pi)
+        t_pp_e = pingpong01(t_raw_e)
+        eidx = torch.clamp((t_pp_e * 255.0).to(torch.int64), 0, 255)
+        edge_cols = lut[eidx]  # [E,3]
+    else:
+        edge_cols = torch.empty((0, 3), device=device)
+    
+    # Convert to numpy and add alpha channel
+    node_positions_np = P.numpy()
+    node_colors_rgba = torch.cat([node_cols, torch.ones((len(node_cols), 1), device=device)], dim=-1).numpy()
+    
+    if len(edges) > 0:
+        edge_indices_np = np.array(edges, dtype=np.int32)
+        edge_colors_rgba = torch.cat([edge_cols, torch.ones((len(edge_cols), 1), device=device)], dim=-1).numpy()
+    else:
+        edge_indices_np = np.empty((0, 2), dtype=np.int32)
+        edge_colors_rgba = np.empty((0, 4), dtype=np.float32)
+    
+    # Calculate SDF parameters
+    # Node radius: similar to dot radius in world space
+    world_scale = 0.02
+    node_radius = scene.dot_radius_px * world_scale
+    
+    # Edge radius: similar to line radius
+    edge_radius = scene.line_radius_px * world_scale * 0.5  # Thinner for capsules
+    
+    # Shell thickness: should be thin enough to see detail
+    shell_thickness = scene.r_inner * 0.05  # 5% of minor radius
+    
+    # Smooth k: use scene's smooth_k for junctions
+    smooth_k = scene.smooth_k if hasattr(scene, 'smooth_k') else 0.1
+    
+    # Upload scene to GPU
+    print(f"[SDF-GPU] Uploading {len(node_positions_np)} nodes and {len(edge_indices_np)} edges...")
+    
+    try:
+        gpu_renderer.upload_scene(
+            node_positions=node_positions_np,
+            node_colors=node_colors_rgba,
+            edge_indices=edge_indices_np,
+            edge_colors=edge_colors_rgba,
+            torus_R=scene.R,
+            torus_r=scene.r_inner,
+            shell_thickness=shell_thickness,
+            node_radius=node_radius,
+            edge_radius=edge_radius,
+            smooth_k=smooth_k,
+            hit_eps=scene.hit_eps,
+            t_max=scene.t_max,
+            max_steps=min(scene.max_steps, 100),  # Limit for SDF
+            camera_pos=cam_np,
+            camera_right=right_np,
+            camera_up=up_np,
+            camera_forward=forward_np,
+            focal_length=scene.f,
+            light_dir=np.array(scene.light_dir, dtype=np.float32),
+            ambient=scene.ambient,
+            diffuse_strength=scene.diffuse_strength,
+            specular_strength=scene.specular_strength,
+            shininess=scene.shininess,
+        )
+        
+        # Render
+        print(f"[SDF-GPU] Ray marching with SDF primitives...")
+        img_rgba = gpu_renderer.render()
+        
+        # Convert RGBA to RGB for output
+        img_rgb = img_rgba[:, :, :3]
+        
+        # Cleanup GPU resources
+        try:
+            gpu_renderer.cleanup()
+        except Exception as cleanup_err:
+            print(f"[warning] GPU cleanup failed after successful render: {cleanup_err}")
+        
+    except Exception as e:
+        print(f"[error] SDF GPU rendering failed: {e}")
+        print("[fallback] Using CPU renderer instead")
+        if gpu_renderer:
+            try:
+                gpu_renderer.cleanup()
+            except Exception:
+                pass
+        render(scene, steps, out_path)
+        return
+    
+    # Save output
+    img_rgb = np.clip(img_rgb, 0.0, 1.0)
+    plt.imsave(png_path, img_rgb)
+    print(f"[saved] {png_path}")
+    
+    # Save scene metadata as JSON
+    metadata = {
+        "steps": steps,
+        "scene": asdict(scene),
+        "renderer": "SDF-GPU (OpenGL compute shader with SDF primitives)",
+    }
+    with open(json_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"[saved] {json_path}")
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, nargs="*", default=[], help="List of step sizes (e.g., --steps 1 13 21). If omitted, only dots are rendered.")
@@ -863,6 +1042,7 @@ def parse_args():
     ap.add_argument("--line_samples", type=int, default=44)
     
     ap.add_argument("--gpu", action="store_true", help="Use OpenGL GPU acceleration (ray marching with compute shaders)")
+    ap.add_argument("--sdf", action="store_true", help="Use SDF-based GPU rendering (true capsule lines on torus interior, not sampled spheres)")
     ap.add_argument("--smooth", action="store_true", help="Enable smooth blending between spheres (GPU mode only, may be slow with many spheres)")
     ap.add_argument("--smooth_k", type=float, default=0.3, help="Smoothing factor for smooth minimum (default: 0.3, higher = more blending)")
 
@@ -894,8 +1074,15 @@ if __name__ == "__main__":
         smooth_k=args.smooth_k,
     )
 
-    # Choose renderer based on --gpu flag
-    if args.gpu:
+    # Choose renderer based on flags
+    if args.sdf:
+        print("[mode] SDF-GPU rendering (OpenGL with SDF primitives)")
+        render_sdf_gpu(
+            scene=scene,
+            steps=args.steps,
+            out_path=args.out,
+        )
+    elif args.gpu:
         print("[mode] GPU rendering (OpenGL compute shaders)")
         render_gpu(
             scene=scene,
