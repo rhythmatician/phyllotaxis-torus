@@ -936,8 +936,10 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     # Edge radius: similar to line radius
     edge_radius = scene.line_radius_px * world_scale * 0.5  # Thinner for capsules
     
-    # Shell thickness: should be thin enough to see detail
-    shell_thickness = scene.r_inner * 0.05  # 5% of minor radius
+    # Shell thickness: should be thin enough to see detail.
+    # Allow overriding the default 5% of minor radius via scene.shell_thickness_factor.
+    shell_thickness_factor = getattr(scene, "shell_thickness_factor", 0.05)
+    shell_thickness = scene.r_inner * shell_thickness_factor
     
     # Smooth k: use scene's smooth_k for junctions
     smooth_k = scene.smooth_k if hasattr(scene, 'smooth_k') else 0.1
