@@ -124,13 +124,39 @@ float torus_inside_shell_sdf(vec3 pos, float R, float r, float thickness) {
 
 // Single edge as ink line on the interior surface of the torus
 // (not floating in the interior volume, but on the inside-facing surface)
-float edge_ink_sdf(vec3 pos, vec3 a, vec3 b, float cap_radius, float R, float r, float thickness) {
-    // Capsule tube
-    float capsule = capsule_sdf(pos, a, b, cap_radius);
-    // Inside shell band (a thin band on the interior-facing surface of the torus)
-    float shell = torus_inside_shell_sdf(pos, R, r, thickness);
-    // Intersection: capsule AND inside shell = ink line constrained to interior surface
-    return op_intersection(capsule, shell);
+// Projects a point onto the nearest point on the inner torus shell
+vec3 project_to_inner_shell(vec3 pos, float R, float r) {
+    // Get the circle center in the XY plane
+    vec2 posXY = pos.xy;
+    float distXY = length(posXY);
+    
+    if (distXY < 0.0001) {
+        // Handle degenerate case at the center
+        return vec3(R - r, 0.0, pos.z);
+    }
+    
+    vec2 dirXY = posXY / distXY;
+    // The inner shell is at distance (R - r) from the center
+    vec2 circleCenter = dirXY * R;
+    
+    // Project to the inner circle
+    vec3 toPos = pos - vec3(circleCenter, 0.0);
+    float dist = length(toPos);
+    
+    if (dist < 0.0001) {
+        // Handle degenerate case
+        return vec3(circleCenter, -r);
+    }
+    
+    vec3 dir = toPos / dist;
+    return vec3(circleCenter, 0.0) + dir * r;
+}
+
+// Edge as line segment between two nodes
+// The endpoints are already on the torus surface, just connect them with a capsule
+float edge_ink_sdf(vec3 pos, vec3 a, vec3 b, float line_width, float R, float r, float thickness) {
+    // Simple capsule between the two endpoint positions
+    return capsule_sdf(pos, a, b, line_width);
 }
 
 // All edges as ink network
@@ -150,9 +176,11 @@ float edges_network_sdf(vec3 pos) {
     return result;
 }
 
-// Single node sphere
+// Single node sphere - just a sphere at the given position
+// The positions are already on the torus surface, so no need to constrain
 float node_sphere_sdf(vec3 pos, int idx) {
-    return sphere_sdf(pos, node_positions[idx], node_radius);
+    vec3 center = node_positions[idx];
+    return sphere_sdf(pos, center, node_radius);
 }
 
 // All node spheres
@@ -177,20 +205,15 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
     float nodes_dist = nodes_sdf(pos);
     float edges_dist = edges_network_sdf(pos);
     
-    // Use hollow torus for background - this creates the shell walls
-    // The camera is inside the hollow interior (SDF < 0), and can see the shell walls
-    float shell_dist = hollow_torus_sdf(pos, torus_R, torus_r, shell_thickness);
-    
     // Smooth union between nodes and edges at junctions
     float ink_dist = op_smooth_union(nodes_dist, edges_dist, smooth_k);
     
-    // Choose closest feature
-    if (ink_dist < shell_dist) {
-        // Hit ink (node or edge)
-        if (nodes_dist < edges_dist) {
-            hit_type = 0;  // Node
-            // Find which node
-            hit_idx = 0;
+    // Determine hit type based on which is closest
+    if (nodes_dist < edges_dist) {
+        hit_type = 0;  // Node
+        // Find which node
+        hit_idx = 0;
+        if (numNodes > 0) {
             float min_dist = node_sphere_sdf(pos, 0);
             for (int i = 1; i < numNodes; i++) {
                 float d = node_sphere_sdf(pos, i);
@@ -199,10 +222,12 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
                     hit_idx = i;
                 }
             }
-        } else {
-            hit_type = 1;  // Edge
-            // Find which edge (approximate - closest endpoint)
-            hit_idx = 0;
+        }
+    } else {
+        hit_type = 1;  // Edge
+        // Find which edge (approximate - closest endpoint)
+        hit_idx = 0;
+        if (numEdges > 0) {
             float min_dist = 1e10;
             for (int i = 0; i < numEdges; i++) {
                 ivec2 edge = edge_indices[i];
@@ -216,12 +241,9 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
                 }
             }
         }
-        return ink_dist;
-    } else {
-        hit_type = 2;  // Torus shell
-        hit_idx = -1;
-        return shell_dist;
     }
+    
+    return ink_dist;
 }
 
 // ============================================================================
