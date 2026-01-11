@@ -20,13 +20,14 @@ Examples:
 import argparse
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-
+from src.types import Scene
+from src.shade import phong_shade
 
 # -------------------------
 # Math helpers
@@ -84,61 +85,6 @@ def build_lut(device, cmap_name="gnuplot", n=256) -> torch.Tensor:
     lut = np.asarray([cmap(i / (n - 1))[:3] for i in range(n)], dtype=np.float32)
     return torch.tensor(lut, device=device)
 
-
-# -------------------------
-# Scene
-# -------------------------
-@dataclass
-class Scene:
-    R: float = 3.0
-    r_outer: float = 2.6
-    r_inner: float = 2.3
-
-    N: int = 1597  # Fibonacci number for seamless phyllotaxis pattern
-
-    W: int = 1920
-    H: int = 1080
-    f: float = 1.2
-    t_step: float = 0.40
-    target: tuple = (0.0, 0.0, 1.0)
-    
-    # anti-aliasing
-    aa_factor: int = 1  # 1=no AA, 2=2x2 SSAA (4x pixels), 3=3x3 SSAA (9x pixels)
-
-    # inside-tube camera recipe
-    u0_cam: float = -math.pi / 4
-    v_cam: float = -0.28
-    eps_wall: float = 0.05
-
-    # raymarch
-    hit_eps: float = 1.2e-3
-    t_max: float = 160.0
-    max_steps: int = 150
-
-    # occlusion tolerance in t-space
-    eps_t: float = 0.01
-
-    # style
-    cmap_name: str = "gnuplot"
-
-    dot_radius_px: int = 4
-    dot_radius_dynamic: bool = True     # Use dynamic sizing based on local density
-    dot_size_min: float = 0.5           # Minimum size multiplier for dynamic dots
-    dot_size_max: float = 2.5           # Maximum size multiplier for dynamic dots
-
-    line_radius_px: int = 1
-    line_radius_dynamic: bool = True    # Use dynamic line thickness (inverse of dots)
-    line_size_min: float = 0.5          # Minimum size multiplier for dynamic lines
-    line_size_max: float = 2.5          # Maximum size multiplier for dynamic lines
-    line_alpha: float = 0.40
-    line_samples_per_edge: int = 44
-
-    # lighting for sphere shading
-    light_dir: tuple = (-0.5, 0.3, 1.0)  # directional light direction (will be normalized)
-    ambient: float = 0.3
-    diffuse_strength: float = 0.6
-    specular_strength: float = 0.5 
-    shininess: float = 32.0
 
 
 def build_camera(scene: Scene):
@@ -321,42 +267,6 @@ def disk_offsets(radius_px: int):
             for dx in range(-radius_px, radius_px + 1)
             if dx * dx + dy * dy <= r2]
 
-
-# -------------------------
-# Correct occluded splatting: ray–sphere per pixel
-# -------------------------
-def phong_shade(
-    base_color: torch.Tensor,     # [K,3]
-    normal: torch.Tensor,          # [K,3]
-    view_dir: torch.Tensor,        # [K,3]
-    light_dir: torch.Tensor,       # [3]
-    ambient: float,
-    diffuse_strength: float,
-    specular_strength: float,
-    shininess: float,
-) -> torch.Tensor:
-    """
-    Compute Phong shading: ambient + diffuse + specular.
-    All inputs normalized.
-    Returns shaded color [K,3].
-    """
-    # Normalize inputs
-    light_dir = light_dir / (torch.linalg.norm(light_dir) + 1e-6)
-
-    # Ambient
-    ambient_col = ambient * base_color
-
-    # Diffuse
-    diff = torch.clamp(torch.sum(normal * light_dir[None, :], dim=-1, keepdim=True), 0.0, 1.0)
-    diffuse_col = diffuse_strength * diff * base_color
-
-    # Specular (Blinn-Phong variant: half-vector)
-    half_vec = (view_dir + light_dir[None, :]) / (torch.linalg.norm(view_dir + light_dir[None, :], dim=-1, keepdim=True) + 1e-6)
-    spec = torch.clamp(torch.sum(normal * half_vec, dim=-1, keepdim=True), 0.0, 1.0)
-    spec_pow = torch.pow(spec, shininess)
-    specular_col = specular_strength * spec_pow * torch.ones_like(base_color)
-
-    return ambient_col + diffuse_col + specular_col
 
 
 def splat_spheres(
