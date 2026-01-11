@@ -838,7 +838,6 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
         )
         
         # Render
-        print(f"[GPU] Ray marching...")
         img_rgba = gpu_renderer.render()
         
         # Convert RGBA to RGB for output
@@ -935,7 +934,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
     node_cols = lut[cidx]  # [N,3]
     
-    # Build edge list (not sampled - just endpoint indices)
+    # Build edge list (endpoint indices)
     edges = []
     N = scene.N
     for step in steps:
@@ -943,34 +942,78 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
             if i + step < N:
                 edges.append((i, i + step))
     
-    # Edge colors from midpoint-v
+    # Sample edges into small segments that follow the torus surface
+    # This prevents straight-line capsules from cutting through the torus interior
+    num_segments_per_edge = 10  # Number of capsule segments per edge
+    
     if len(edges) > 0:
         i0 = torch.tensor([e[0] for e in edges], device=device, dtype=torch.int64)
         i1 = torch.tensor([e[1] for e in edges], device=device, dtype=torch.int64)
         
-        v0 = v[i0]
-        v1 = v[i1]
+        # Get (u,v) coordinates of endpoints
+        u0 = u[i0]; v0 = v[i0]
+        u1 = u[i1]; v1 = v[i1]
         
+        # Wrap to shortest path
+        du = wrap_pi_torch(u1 - u0)
         dv = wrap_pi_torch(v1 - v0)
         
+        # Sample along each edge (E x S samples)
+        S = num_segments_per_edge + 1
+        A = torch.linspace(0.0, 1.0, S, device=device, dtype=torch.float32)
+        
+        # Interpolate (u,v) coordinates
+        uu = u0[:, None] + du[:, None] * A[None, :]  # [E, S]
+        vv = v0[:, None] + dv[:, None] * A[None, :]  # [E, S]
+        
+        # Convert to 3D positions on torus surface
+        sampled_pts = torus_point_from_uv(uu.reshape(-1), vv.reshape(-1), scene.R, scene.r_inner)  # [E*S, 3]
+        sampled_pts = sampled_pts.reshape(len(edges), S, 3)  # [E, S, 3]
+        
+        # Create edge segments: each segment connects adjacent samples
+        # For each original edge, create (S-1) small capsule segments
+        segment_indices = []
+        segment_colors = []
+        
+        # Compute edge colors from midpoint-v
         v_mid = v0 + 0.5 * dv
         t_raw_e = (v_mid % (2.0 * math.pi)) / (2.0 * math.pi)
         t_pp_e = pingpong01(t_raw_e)
         eidx = torch.clamp((t_pp_e * 255.0).to(torch.int64), 0, 255)
-        edge_cols = lut[eidx]  # [E,3]
+        edge_cols = lut[eidx]  # [E, 3]
+        
+        # Build segment pairs: for each edge, connect consecutive samples
+        base_idx = len(P)  # Start indexing after the nodes
+        for edge_idx in range(len(edges)):
+            edge_color = edge_cols[edge_idx]
+            for seg_idx in range(S - 1):
+                # Indices into the sampled_pts array
+                idx_a = base_idx + edge_idx * S + seg_idx
+                idx_b = base_idx + edge_idx * S + seg_idx + 1
+                segment_indices.append((idx_a, idx_b))
+                segment_colors.append(edge_color)
+        
+        # Flatten sampled points and append to node positions
+        sampled_pts_flat = sampled_pts.reshape(-1, 3)  # [E*S, 3]
+        all_positions = torch.cat([P, sampled_pts_flat], dim=0)  # [N + E*S, 3]
+        
+        # Create colors for sampled points (repeat edge color for all samples of that edge)
+        sampled_colors = edge_cols[:, None, :].expand(-1, S, -1).reshape(-1, 3)  # [E*S, 3]
+        all_colors = torch.cat([node_cols, sampled_colors], dim=0)  # [N + E*S, 3]
+        
+        # Prepare edge data
+        edge_indices_np = np.array(segment_indices, dtype=np.int32)
+        segment_colors_torch = torch.stack(segment_colors, dim=0)  # [E*(S-1), 3]
+        edge_colors_rgba = torch.cat([segment_colors_torch, torch.ones((len(segment_colors_torch), 1), device=device)], dim=-1).numpy()
     else:
-        edge_cols = torch.empty((0, 3), device=device)
-    
-    # Convert to numpy and add alpha channel
-    node_positions_np = P.numpy()
-    node_colors_rgba = torch.cat([node_cols, torch.ones((len(node_cols), 1), device=device)], dim=-1).numpy()
-    
-    if len(edges) > 0:
-        edge_indices_np = np.array(edges, dtype=np.int32)
-        edge_colors_rgba = torch.cat([edge_cols, torch.ones((len(edge_cols), 1), device=device)], dim=-1).numpy()
-    else:
+        all_positions = P
+        all_colors = node_cols
         edge_indices_np = np.empty((0, 2), dtype=np.int32)
         edge_colors_rgba = np.empty((0, 4), dtype=np.float32)
+    
+    # Convert to numpy and add alpha channel
+    node_positions_np = all_positions.numpy()  # Now includes nodes + edge sample points
+    node_colors_rgba = torch.cat([all_colors, torch.ones((len(all_colors), 1), device=device)], dim=-1).numpy()
     
     # Calculate SDF parameters
     # Use the same world_scale approach as render_gpu for consistency
@@ -1024,7 +1067,6 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         )
         
         # Render
-        print(f"[SDF-GPU] Ray marching with SDF primitives...")
         img_rgba = gpu_renderer.render()
         
         # Convert RGBA to RGB for output
