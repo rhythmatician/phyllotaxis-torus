@@ -920,7 +920,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         i0 = torch.tensor([e[0] for e in edges], device=device, dtype=torch.int64)
         i1 = torch.tensor([e[1] for e in edges], device=device, dtype=torch.int64)
         
-        u0 = u[i0]; v0 = v[i0]
+        v0 = v[i0]
         u1 = u[i1]; v1 = v[i1]
         
         dv = wrap_pi_torch(v1 - v0)
