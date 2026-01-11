@@ -368,6 +368,7 @@ def splat_spheres(
     right, up, forward,
     alpha: float | None = None,   # None => overwrite
     use_shading: bool = True,      # Apply Phong shading?
+    sphere_depth: torch.Tensor | None = None,  # Shared depth buffer for sphere-to-sphere occlusion
 ):
     """
     Render each center as a small sphere, per covered pixel:
@@ -376,8 +377,14 @@ def splat_spheres(
       - compare t_hit_sphere to depth_t[y,x] (torus)
       - if use_shading: compute per-pixel normal and apply Phong shading
       - radius_px can be a scalar (uniform) or Tensor (per-point dynamic sizing)
+      - sphere_depth: optional shared depth buffer for proper occlusion between multiple splat calls
     """
     H, W = scene.H, scene.W
+    
+    # Sphere depth buffer to ensure proper occlusion between spheres
+    if sphere_depth is None:
+        sphere_depth = torch.full((H, W), float("inf"), device=img.device, dtype=torch.float32)
+    
     valid, z_cam, px, py = project_points(centers, C, right, up, forward, scene.f, W, H)
 
     centers = centers[valid]
@@ -473,6 +480,20 @@ def splat_spheres(
         Di = Di[vis]
         P0 = P0[vis]
 
+        # Check sphere-to-sphere occlusion: only render if closer than existing spheres
+        current_sphere_depth = sphere_depth[y, x]
+        closer = t_sphere < current_sphere_depth
+        
+        if not closer.any():
+            continue
+            
+        x = x[closer]
+        y = y[closer]
+        col = col[closer]
+        t_sphere = t_sphere[closer]
+        Di = Di[closer]
+        P0 = P0[closer]
+
         # Apply Phong shading if requested
         if use_shading:
             # Compute 3D hit point on sphere surface
@@ -496,10 +517,15 @@ def splat_spheres(
                 shininess=scene.shininess,
             )
 
+        # Update sphere depth buffer and render
+        sphere_depth[y, x] = torch.minimum(sphere_depth[y, x], t_sphere)
+        
         if alpha is None:
             img[y, x, :] = col
         else:
             img[y, x, :] = (1.0 - alpha) * img[y, x, :] + alpha * col
+    
+    return sphere_depth
 
 
 # -------------------------
@@ -608,7 +634,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
         line_radii = scene.line_radius_px  # Uniform radius
 
     # Render lines first (alpha blend, light shading, with dynamic radii)
-    splat_spheres(
+    sphere_depth = splat_spheres(
         img=img,
         depth_t=depth_t,
         D=D,
@@ -625,6 +651,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
     )
 
     # Render dots on top (overwrite, full shading, with dynamic radii)
+    # Pass the same sphere_depth buffer so dots properly occlude with lines
     splat_spheres(
         img=img,
         depth_t=depth_t,
@@ -639,6 +666,7 @@ def render(scene: Scene, steps: list[int], out_path: str):
         forward=forward,
         alpha=None,
         use_shading=True,
+        sphere_depth=sphere_depth,  # Share depth buffer!
     )
 
     img_cpu = img.clamp(0.0, 1.0).detach().cpu().numpy()
