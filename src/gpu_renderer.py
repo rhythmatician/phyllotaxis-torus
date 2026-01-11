@@ -79,6 +79,7 @@ class GPURenderer:
         centers: np.ndarray,
         colors: np.ndarray,
         radii: np.ndarray,
+        enable_smooth_blend: bool,
         smooth_k: float,
         blend_radius: float,
         hit_eps: float,
@@ -102,6 +103,7 @@ class GPURenderer:
             centers: Sphere centers [N, 3]
             colors: Sphere colors [N, 4] (RGBA, 0-1 range)
             radii: Sphere radii [N]
+            enable_smooth_blend: Enable smooth_min blending
             smooth_k: Smoothing factor for smooth_min
             blend_radius: Radius for color blending
             hit_eps: Ray marching hit epsilon
@@ -148,6 +150,7 @@ class GPURenderer:
         
         # Set uniforms
         self.program['numSpheres'].value = int(self.num_spheres)
+        self.program['enable_smooth_blend'].value = bool(enable_smooth_blend)
         self.program['smooth_k'].value = float(smooth_k)
         self.program['blend_radius'].value = float(blend_radius)
         self.program['hit_eps'].value = float(hit_eps)

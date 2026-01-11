@@ -761,16 +761,25 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     # Upload scene to GPU
     print(f"[GPU] Uploading {len(centers_np)} spheres to GPU...")
     
+    # Warn about performance with many spheres
+    if len(centers_np) > 1000:
+        print(f"[GPU] Warning: {len(centers_np)} spheres may be slow without hardware GPU acceleration")
+        print(f"[GPU] Consider using --steps without arguments (dots only) for faster rendering")
+    
+    # For GPU rendering, reduce max_steps to improve performance
+    gpu_max_steps = min(scene.max_steps, 50)  # Limit to 50 steps for GPU
+    
     try:
         gpu_renderer.upload_scene(
             centers=centers_np,
             colors=colors_np,
             radii=radii_np,
+            enable_smooth_blend=scene.enable_smooth_blend,
             smooth_k=scene.smooth_k,
             blend_radius=scene.blend_radius_multiplier * np.mean(radii_np),
             hit_eps=scene.hit_eps,
             t_max=scene.t_max,
-            max_steps=scene.max_steps,
+            max_steps=gpu_max_steps,
             camera_pos=cam_np,
             camera_right=right_np,
             camera_up=up_np,

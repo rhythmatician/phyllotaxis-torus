@@ -5,6 +5,7 @@ layout(local_size_x = 8, local_size_y = 8) in;
 
 // Uniforms (camera and rendering parameters)
 uniform int numSpheres;
+uniform bool enable_smooth_blend;
 uniform float smooth_k;
 uniform float blend_radius;
 uniform float hit_eps;
@@ -51,10 +52,24 @@ float sphere_sdf(vec3 pos, vec3 center, float radius) {
     return length(pos - center) - radius;
 }
 
-// Compute smooth SDF for all spheres
+// Find nearest sphere and its distance (efficient for non-blended rendering)
+void find_nearest_sphere(vec3 pos, out float min_dist, out int nearest_idx) {
+    min_dist = 1e10;
+    nearest_idx = -1;
+    
+    for (int i = 0; i < numSpheres; i++) {
+        float d = sphere_sdf(pos, sphere_centers[i], sphere_radii[i]);
+        if (d < min_dist) {
+            min_dist = d;
+            nearest_idx = i;
+        }
+    }
+}
+
+// Compute smooth SDF for all spheres (expensive, only use if enabled)
 float spheres_smooth_sdf(vec3 pos) {
     if (numSpheres == 0) {
-        return 1e10; // Very far if no spheres
+        return 1e10;
     }
     
     float result = sphere_sdf(pos, sphere_centers[0], sphere_radii[0]);
@@ -67,13 +82,26 @@ float spheres_smooth_sdf(vec3 pos) {
     return result;
 }
 
+// Get SDF value (uses smooth blend if enabled, otherwise finds nearest)
+float get_sdf(vec3 pos, out int nearest_idx) {
+    if (enable_smooth_blend) {
+        nearest_idx = -1;  // Not used for smooth blend
+        return spheres_smooth_sdf(pos);
+    } else {
+        float dist;
+        find_nearest_sphere(pos, dist, nearest_idx);
+        return dist;
+    }
+}
+
 // Estimate normal using gradient
-vec3 estimate_normal(vec3 pos, float eps) {
+vec3 estimate_normal(vec3 pos, float eps, int hint_idx) {
     vec2 e = vec2(eps, 0.0);
+    int dummy;
     return normalize(vec3(
-        spheres_smooth_sdf(pos + e.xyy) - spheres_smooth_sdf(pos - e.xyy),
-        spheres_smooth_sdf(pos + e.yxy) - spheres_smooth_sdf(pos - e.yxy),
-        spheres_smooth_sdf(pos + e.yyx) - spheres_smooth_sdf(pos - e.yyx)
+        get_sdf(pos + e.xyy, dummy) - get_sdf(pos - e.xyy, dummy),
+        get_sdf(pos + e.yxy, dummy) - get_sdf(pos - e.yxy, dummy),
+        get_sdf(pos + e.yyx, dummy) - get_sdf(pos - e.yyx, dummy)
     ));
 }
 
@@ -109,37 +137,45 @@ vec3 phong_shade(
     return ambient_col + diffuse_col + specular_col;
 }
 
-// Get color at hit point (blend nearby sphere colors)
-vec4 get_color_at_point(vec3 pos, float blend_dist) {
-    vec4 total_color = vec4(0.0);
-    float total_weight = 0.0;
-    
-    for (int i = 0; i < numSpheres; i++) {
-        float dist = length(pos - sphere_centers[i]);
-        if (dist < blend_dist) {
-            float weight = 1.0 - (dist / blend_dist);
-            weight = weight * weight; // Quadratic falloff
-            total_color += sphere_colors[i] * weight;
-            total_weight += weight;
+// Get color at hit point
+vec4 get_color_at_point(vec3 pos, int nearest_idx, float blend_dist) {
+    if (enable_smooth_blend) {
+        // Blend nearby sphere colors
+        vec4 total_color = vec4(0.0);
+        float total_weight = 0.0;
+        
+        for (int i = 0; i < numSpheres; i++) {
+            float dist = length(pos - sphere_centers[i]);
+            if (dist < blend_dist) {
+                float weight = 1.0 - (dist / blend_dist);
+                weight = weight * weight;
+                total_color += sphere_colors[i] * weight;
+                total_weight += weight;
+            }
         }
-    }
-    
-    if (total_weight > 0.0) {
-        return total_color / total_weight;
-    }
-    
-    // Fallback: find nearest sphere
-    float min_dist = 1e10;
-    int nearest = 0;
-    for (int i = 0; i < numSpheres; i++) {
-        float dist = length(pos - sphere_centers[i]);
-        if (dist < min_dist) {
-            min_dist = dist;
-            nearest = i;
+        
+        if (total_weight > 0.0) {
+            return total_color / total_weight;
         }
+        
+        // Fallback: find nearest
+        float min_dist = 1e10;
+        int nearest = 0;
+        for (int i = 0; i < numSpheres; i++) {
+            float dist = length(pos - sphere_centers[i]);
+            if (dist < min_dist) {
+                min_dist = dist;
+                nearest = i;
+            }
+        }
+        return sphere_colors[nearest];
+    } else {
+        // Use nearest sphere color directly
+        if (nearest_idx >= 0 && nearest_idx < numSpheres) {
+            return sphere_colors[nearest_idx];
+        }
+        return vec4(1.0);  // White fallback
     }
-    
-    return sphere_colors[nearest];
 }
 
 void main() {
@@ -179,17 +215,20 @@ void main() {
     float t = 0.0;
     bool hit = false;
     vec3 hit_pos;
+    int hit_idx = -1;
     
     for (int step = 0; step < max_steps; step++) {
         vec3 pos = ray_origin + t * ray_dir;
         
-        // Compute smooth SDF
-        float sdf = spheres_smooth_sdf(pos);
+        // Compute SDF
+        int nearest_idx;
+        float sdf = get_sdf(pos, nearest_idx);
         
         if (sdf < hit_eps) {
             // Hit!
             hit = true;
             hit_pos = pos;
+            hit_idx = nearest_idx;
             break;
         }
         
@@ -198,7 +237,7 @@ void main() {
         }
         
         // Sphere tracing step
-        t += sdf;
+        t += max(sdf, hit_eps * 0.5);  // Prevent tiny steps
     }
     
     // Compute output color
@@ -206,10 +245,10 @@ void main() {
     
     if (hit) {
         // Compute normal at hit point
-        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0);
+        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0, hit_idx);
         
-        // Get base color (blend nearby spheres)
-        vec4 base_color = get_color_at_point(hit_pos, blend_radius);
+        // Get base color
+        vec4 base_color = get_color_at_point(hit_pos, hit_idx, blend_radius);
         
         // Compute view direction (from hit point toward camera)
         vec3 view_dir = normalize(camera_pos - hit_pos);
