@@ -728,6 +728,14 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     else:
         line_radii = torch.full((len(line_pts),), scene.line_radius_px, device=device)
     
+    # Helper function to convert pixel radii to world space
+    def pixel_radii_to_world(radii, num_points, world_scale, device):
+        """Convert pixel radius (scalar or tensor) to world space radius tensor."""
+        if isinstance(radii, torch.Tensor):
+            return radii * world_scale
+        else:
+            return torch.full((num_points,), radii * world_scale, device=device)
+    
     # Combine dots and lines into single sphere list
     all_centers = torch.cat([line_pts, P], dim=0)
     all_colors = torch.cat([line_cols, dot_cols], dim=0)
@@ -735,18 +743,10 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     # Convert line_radii and dot_radii to world space
     # For GPU ray marching, we need actual 3D radii, not pixel radii
     # Use a heuristic: scale pixel radius by a factor based on scene size
-    aspect = scene.W / scene.H
     world_scale = 0.02  # Approximate world units per pixel at focal distance
     
-    if isinstance(line_radii, torch.Tensor):
-        line_world_radii = line_radii * world_scale
-    else:
-        line_world_radii = torch.full((len(line_pts),), line_radii * world_scale, device=device)
-    
-    if isinstance(dot_radii, torch.Tensor):
-        dot_world_radii = dot_radii * world_scale
-    else:
-        dot_world_radii = torch.full((len(P),), dot_radii * world_scale, device=device)
+    line_world_radii = pixel_radii_to_world(line_radii, len(line_pts), world_scale, device)
+    dot_world_radii = pixel_radii_to_world(dot_radii, len(P), world_scale, device)
     
     all_radii = torch.cat([line_world_radii, dot_world_radii], dim=0)
     

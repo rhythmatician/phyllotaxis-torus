@@ -222,7 +222,7 @@ class GPURenderer:
         """Ensure cleanup on deletion."""
         try:
             self.cleanup()
-        except:
+        except Exception:
             pass  # Ignore errors during cleanup
 
 

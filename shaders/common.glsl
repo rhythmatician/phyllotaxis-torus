@@ -42,10 +42,3 @@ vec3 phong_shade(
     
     return ambient_col + diffuse_col + specular_col;
 }
-
-// Estimate normal using gradient
-vec3 estimate_normal_spheres(vec3 pos, int numSpheres, float eps) {
-    // This will be implemented in the compute shader where we have access to sphere data
-    // Placeholder - actual implementation will use the sphere buffer
-    return vec3(0.0, 0.0, 1.0);
-}
