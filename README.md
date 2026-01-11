@@ -7,7 +7,7 @@ A GPU-accelerated renderer for beautiful phyllotaxis-based point distributions o
 - **Dual Rendering Modes**:
   - **CPU Mode** (default): PyTorch-based splatting renderer, works on any system
   - **GPU Mode** (`--gpu` flag): OpenGL compute shader ray marching, requires OpenGL 4.3+ GPU
-- **OpenGL GPU Acceleration**: Works with Intel HD Graphics 630 and other OpenGL 4.3+ GPUs (no CUDA required)
+- **OpenGL GPU Acceleration**: Works with Intel HD Graphics 630 and other OpenGL 4.3+ GPUs
 - **Correct Occlusion**: Uses ray–sphere intersection per pixel to properly occlude dots and lines behind the torus surface
 - **Flexible Edge Networks**: Specify any combination of step sizes to create custom phyllotaxis networks (e.g., Fibonacci spirals)
 - **High-Quality Output**: 1920×1080 default with configurable resolution, point styles, and line rendering

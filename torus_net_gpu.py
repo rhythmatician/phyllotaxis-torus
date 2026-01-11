@@ -9,7 +9,7 @@ Fixes the "dots visible on back side of donut hole" problem by:
 
 Deps:
   pip install numpy matplotlib
-  pip install torch  (CUDA unavailable with Intel(R) HD Graphics 630)
+  pip install torch  (Must be `Intel(R) HD Graphics 630` compatible)
 
 Examples:
   python torus_net_gpu.py --steps 13 21 --out out_13_21.png
@@ -445,8 +445,8 @@ def splat_spheres(
 # Render
 # -------------------------
 def render(scene: Scene, steps: list[int], out_path: str):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # FIXME: Use something other than CUDA for GPU acceleration.  Something that works on Intel(R) HD Graphics 630
-    print(f"[device] {device} (cuda_available={torch.cuda.is_available()})")
+    device = torch.device("cpu")
+    print(f"[device] {device}")
 
     # Organize outputs by file type
     out_path = Path(out_path)
