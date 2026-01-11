@@ -59,6 +59,16 @@ float torus_sdf(vec3 pos, float R, float r) {
     return length(q) - r;
 }
 
+// Hollow torus (shell with thickness)
+// Returns negative inside the hollow interior, positive outside the shell
+float hollow_torus_sdf(vec3 pos, float R, float r_outer, float thickness) {
+    float torus_outer = torus_sdf(pos, R, r_outer);
+    float torus_inner = torus_sdf(pos, R, r_outer - thickness);
+    // Shell is the region between outer and inner surfaces
+    // For a hollow torus, inside is negative, shell is near-zero, outside is positive
+    return max(torus_outer, -torus_inner);
+}
+
 // Sphere SDF
 float sphere_sdf(vec3 pos, vec3 center, float radius) {
     return length(pos - center) - radius;
@@ -166,13 +176,16 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
     
     float nodes_dist = nodes_sdf(pos);
     float edges_dist = edges_network_sdf(pos);
-    float torus_dist = torus_sdf(pos, torus_R, torus_r);
+    
+    // Use hollow torus for background - this creates the shell walls
+    // The camera is inside the hollow interior (SDF < 0), and can see the shell walls
+    float shell_dist = hollow_torus_sdf(pos, torus_R, torus_r, shell_thickness);
     
     // Smooth union between nodes and edges at junctions
     float ink_dist = op_smooth_union(nodes_dist, edges_dist, smooth_k);
     
     // Choose closest feature
-    if (ink_dist < torus_dist) {
+    if (ink_dist < shell_dist) {
         // Hit ink (node or edge)
         if (nodes_dist < edges_dist) {
             hit_type = 0;  // Node
@@ -207,7 +220,7 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
     } else {
         hit_type = 2;  // Torus shell
         hit_idx = -1;
-        return torus_dist;
+        return shell_dist;
     }
 }
 
@@ -226,7 +239,7 @@ vec3 estimate_normal(vec3 pos, float eps) {
     ));
 }
 
-// Phong shading
+// Phong shading with multiple light sources for interior illumination
 vec3 phong_shade(
     vec3 base_color,
     vec3 normal,
@@ -242,10 +255,10 @@ vec3 phong_shade(
     vec3 normal_norm = normalize(normal);
     vec3 view_dir_norm = normalize(view_dir);
     
-    // Ambient component
+    // Ambient component - boosted for interior visibility
     vec3 ambient_col = ambient_param * base_color;
     
-    // Diffuse component
+    // PRIMARY LIGHT: Main directional light
     float diff = max(dot(normal_norm, light_dir_norm), 0.0);
     vec3 diffuse_col = diffuse_strength_param * diff * base_color;
     
@@ -255,7 +268,18 @@ vec3 phong_shade(
     float spec_pow = pow(spec, shininess_param);
     vec3 specular_col = specular_strength_param * spec_pow * vec3(1.0);
     
-    return ambient_col + diffuse_col + specular_col;
+    // INTERIOR LIGHT: Additional light from opposite direction to illuminate inside of torus
+    // This light comes from the opposite direction to illuminate surfaces facing inward
+    vec3 interior_light_dir = normalize(-light_dir_param);  // Opposite of main light
+    float diff_interior = max(dot(normal_norm, interior_light_dir), 0.0);
+    vec3 diffuse_interior = (diffuse_strength_param * 0.5) * diff_interior * base_color;  // Half strength
+    
+    // FILL LIGHT: Soft fill light from view direction to reduce harsh shadows
+    vec3 fill_light_dir = view_dir_norm;  // Light coming from camera
+    float diff_fill = max(dot(normal_norm, fill_light_dir), 0.0);
+    vec3 diffuse_fill = (diffuse_strength_param * 0.3) * diff_fill * base_color;  // 30% strength
+    
+    return ambient_col + diffuse_col + specular_col + diffuse_interior + diffuse_fill;
 }
 
 // Get color based on hit type and index
