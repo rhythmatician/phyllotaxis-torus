@@ -41,10 +41,10 @@ layout(std430, binding = 3) buffer OutputImage {
     vec4 output_pixels[];
 };
 
-// Smooth minimum function (Inigo Quilez formula)
+// Smooth minimum function (Inigo Quilez polynomial formula)
 float smooth_min(float d1, float d2, float k) {
-    float h = clamp(k - abs(d1 - d2), 0.0, k) / k;
-    return min(d1, d2) - h * h * k / 6.0;
+    float h = clamp(0.5 + 0.5 * (d2 - d1) / k, 0.0, 1.0);
+    return mix(d2, d1, h) - k * h * (1.0 - h);
 }
 
 // Sphere SDF
