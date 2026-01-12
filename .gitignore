@@ -1,10 +1,18 @@
 # Byte-compiled / optimized / DLL files
 *.pyc
+tests/__pycache__/*
 
 # Temporary files
 temp.*
 tmp*
 tmp/
+
+# Test output files
+test_output/*.json
+test_output/*.png
+tests/json/*.json
+tests/png/*.png
+tests/test_output/*
 
 # Output files
 json/*.json
@@ -18,3 +26,18 @@ docs/*
 
 # Smoothing demonstrations
 smooth_min_*.*
+
+# VS Code settings
+.vscode/settings.json
+
+# Copilot's temporary test files
+debug_*.py
+analyze_*.py
+find_*.py
+check_*.py
+diagnostic*.py
+tests/compare_*.py
+tests/visualize_*.py
+
+# Text files
+*.txt

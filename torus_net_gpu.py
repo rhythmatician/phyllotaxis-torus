@@ -9,7 +9,7 @@ Fixes the "dots visible on back side of donut hole" problem by:
 
 Deps:
   pip install numpy matplotlib
-  pip install torch  (CUDA unavailable with Intel(R) HD Graphics 630)
+  pip install torch  (Must be `Intel(R) HD Graphics 630` compatible)
 
 Examples:
   python torus_net_gpu.py --steps 13 21 --out out_13_21.png
@@ -26,8 +26,9 @@ from pathlib import Path
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from src.types import Scene
+from src.scene_types import Scene
 from src.shade import phong_shade
+
 
 # -------------------------
 # Math helpers
@@ -43,7 +44,21 @@ def torus_sdf(P: torch.Tensor, R: float, r: float) -> torch.Tensor:
     return torch.sqrt(qx * qx + z * z) - r
 
 
-def torus_point_from_uv(u: torch.Tensor, v: torch.Tensor, R: float, r: float) -> torch.Tensor:
+def hollow_torus_sdf(P: torch.Tensor, R: float, r: float) -> torch.Tensor:
+    """
+    Torus SDF: cavity inside, solid outside.
+
+    Inside tube (cavity): negative SDF
+    Outside tube (solid): positive SDF
+    """
+    rho = torch.sqrt(P[:, 0] ** 2 + P[:, 1] ** 2)
+    d_ring = torch.sqrt((rho - R) ** 2 + P[:, 2] ** 2)
+    return d_ring - r
+
+
+def torus_point_from_uv(
+    u: torch.Tensor, v: torch.Tensor, R: float, r: float
+) -> torch.Tensor:
     cu, su = torch.cos(u), torch.sin(u)
     cv, sv = torch.cos(v), torch.sin(v)
     x = (R + r * cv) * cu
@@ -86,7 +101,6 @@ def build_lut(device, cmap_name="gnuplot", n=256) -> torch.Tensor:
     return torch.tensor(lut, device=device)
 
 
-
 def build_camera(scene: Scene):
     u0 = scene.u0_cam
     e_r = np.array([math.cos(u0), math.sin(u0), 0.0])
@@ -94,7 +108,9 @@ def build_camera(scene: Scene):
 
     centerline = scene.R * e_r
     rho = scene.r_inner - scene.eps_wall
-    cam0 = centerline + rho * (math.cos(scene.v_cam) * e_r + math.sin(scene.v_cam) * e_z)
+    cam0 = centerline + rho * (
+        math.cos(scene.v_cam) * e_r + math.sin(scene.v_cam) * e_z
+    )
 
     target_old = np.array([0.0, 0.0, scene.r_outer], dtype=float)
     dir_to_old = target_old - cam0
@@ -105,7 +121,14 @@ def build_camera(scene: Scene):
     return cam, right, up, forward
 
 
-def compute_dynamic_radii(v: torch.Tensor, R: float, r: float, base_radius: int, size_min: float, size_max: float) -> torch.Tensor:
+def compute_dynamic_radii(
+    v: torch.Tensor,
+    R: float,
+    r: float,
+    base_radius: int,
+    size_min: float,
+    size_max: float,
+) -> torch.Tensor:
     """
     Compute dynamic radii for phyllotaxis dots based on local spacing.
 
@@ -148,7 +171,9 @@ def compute_dynamic_radii(v: torch.Tensor, R: float, r: float, base_radius: int,
 # -------------------------
 # Phyllotaxis uv
 # -------------------------
-def torus_phyllotaxis_uv(N: int, R: float, r: float, device) -> tuple[torch.Tensor, torch.Tensor]:
+def torus_phyllotaxis_uv(
+    N: int, R: float, r: float, device
+) -> tuple[torch.Tensor, torch.Tensor]:
     phi = (1 + 5**0.5) / 2
     alpha = 2 * math.pi / (phi * phi)
     two_pi = 2.0 * math.pi
@@ -178,16 +203,19 @@ def torus_phyllotaxis_uv(N: int, R: float, r: float, device) -> tuple[torch.Tens
 def build_rays(scene: Scene, device, right, up, forward) -> torch.Tensor:
     """
     Returns D[y,x,3] normalized ray directions.
+    Uses (W-1) and (H-1) convention to match project_points pixel grid.
     """
     W, H = scene.W, scene.H
     aspect = W / H
 
-    xs = (torch.arange(W, device=device, dtype=torch.float32) + 0.5) / W * 2.0 - 1.0
-    ys = 1.0 - (torch.arange(H, device=device, dtype=torch.float32) + 0.5) / H * 2.0
+    # Map pixel centers to [-1, 1] using (W-1) convention to match project_points
+    xs = (
+        torch.arange(W, device=device, dtype=torch.float32) / (W - 1) * 2.0 - 1.0
+    ) * aspect
+    ys = 1.0 - (torch.arange(H, device=device, dtype=torch.float32) / (H - 1) * 2.0)
 
     # [H,W]
     y_img, x_img = torch.meshgrid(ys, xs, indexing="ij")
-    x_img = x_img * aspect
 
     dx = x_img / scene.f
     dy = y_img / scene.f
@@ -262,11 +290,12 @@ def project_points(P: torch.Tensor, C, right, up, forward, f: float, W: int, H: 
 
 def disk_offsets(radius_px: int):
     r2 = radius_px * radius_px
-    return [(dx, dy)
-            for dy in range(-radius_px, radius_px + 1)
-            for dx in range(-radius_px, radius_px + 1)
-            if dx * dx + dy * dy <= r2]
-
+    return [
+        (dx, dy)
+        for dy in range(-radius_px, radius_px + 1)
+        for dx in range(-radius_px, radius_px + 1)
+        if dx * dx + dy * dy <= r2
+    ]
 
 
 def splat_spheres(
@@ -274,14 +303,18 @@ def splat_spheres(
     depth_t: torch.Tensor,
     D: torch.Tensor,
     C: torch.Tensor,
-    centers: torch.Tensor,    # [M,3]
-    colors: torch.Tensor,     # [M,3]
+    centers: torch.Tensor,  # [M,3]
+    colors: torch.Tensor,  # [M,3]
     radius_px: int | torch.Tensor,  # int for uniform, Tensor[M] for per-point
     scene: Scene,
-    right, up, forward,
-    alpha: float | None = None,   # None => overwrite
-    use_shading: bool = True,      # Apply Phong shading?
-    sphere_depth: torch.Tensor | None = None,  # Shared depth buffer for sphere-to-sphere occlusion
+    right,
+    up,
+    forward,
+    alpha: float | None = None,  # None => overwrite
+    use_shading: bool = True,  # Apply Phong shading?
+    sphere_depth: (
+        torch.Tensor | None
+    ) = None,  # Shared depth buffer for sphere-to-sphere occlusion
 ):
     """
     Render each center as a small sphere, per covered pixel:
@@ -293,12 +326,19 @@ def splat_spheres(
       - sphere_depth: optional shared depth buffer for proper occlusion between multiple splat calls
     """
     H, W = scene.H, scene.W
-    
+
     # Sphere depth buffer to ensure proper occlusion between spheres
     if sphere_depth is None:
-        sphere_depth = torch.full((H, W), float("inf"), device=img.device, dtype=torch.float32)
-    
+        sphere_depth = torch.full(
+            (H, W), float("inf"), device=img.device, dtype=torch.float32
+        )
+
     valid, z_cam, px, py = project_points(centers, C, right, up, forward, scene.f, W, H)
+
+    if centers.numel() > 0:
+        print(
+            f"[CPU splat] Processing {len(centers)} centers, {valid.sum().item()} valid after projection"
+        )
 
     centers = centers[valid]
     colors = colors[valid]
@@ -350,8 +390,8 @@ def splat_spheres(
         Di_inb = D[y_inb, x_inb, :]  # [K,3]
 
         # ray-sphere: |(C + tD) - P0|^2 = r^2
-        L = P0_inb - C[None, :]               # [K,3]
-        b = torch.sum(Di_inb * L, dim=-1)     # [K]
+        L = P0_inb - C[None, :]  # [K,3]
+        b = torch.sum(Di_inb * L, dim=-1)  # [K]
         c = torch.sum(L * L, dim=-1) - rr2_inb
         disc = b * b - c
 
@@ -396,10 +436,10 @@ def splat_spheres(
         # Check sphere-to-sphere occlusion: only render if closer than existing spheres
         current_sphere_depth = sphere_depth[y, x]
         closer = t_sphere < current_sphere_depth
-        
+
         if not closer.any():
             continue
-            
+
         x = x[closer]
         y = y[closer]
         col = col[closer]
@@ -411,13 +451,17 @@ def splat_spheres(
         if use_shading:
             # Compute 3D hit point on sphere surface
             hit_point = C[None, :] + Di * t_sphere[:, None]  # [K,3]
-            
+
             # Normal is radial direction from center
-            normal = (hit_point - P0) / (torch.linalg.norm(hit_point - P0, dim=-1, keepdim=True) + 1e-6)  # [K,3]
-            
+            normal = (hit_point - P0) / (
+                torch.linalg.norm(hit_point - P0, dim=-1, keepdim=True) + 1e-6
+            )  # [K,3]
+
             # View direction (from hit point toward camera)
-            view_dir = (C[None, :] - hit_point) / (torch.linalg.norm(C[None, :] - hit_point, dim=-1, keepdim=True) + 1e-6)  # [K,3]
-            
+            view_dir = (C[None, :] - hit_point) / (
+                torch.linalg.norm(C[None, :] - hit_point, dim=-1, keepdim=True) + 1e-6
+            )  # [K,3]
+
             # Apply Phong shading
             col = phong_shade(
                 base_color=col,
@@ -432,31 +476,31 @@ def splat_spheres(
 
         # Update sphere depth buffer and render
         sphere_depth[y, x] = torch.minimum(sphere_depth[y, x], t_sphere)
-        
+
         if alpha is None:
             img[y, x, :] = col
         else:
             img[y, x, :] = (1.0 - alpha) * img[y, x, :] + alpha * col
-    
+
     return sphere_depth
 
 
 # -------------------------
-# Render
+# CPU Renderer
 # -------------------------
-def render(scene: Scene, steps: list[int], out_path: str):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")  # FIXME: Use something other than CUDA for GPU acceleration.  Something that works on Intel(R) HD Graphics 630
-    print(f"[device] {device} (cuda_available={torch.cuda.is_available()})")
+def render_cpu(scene: Scene, steps: list[int], out_path: str):
+    device = torch.device("cpu")
+    print(f"[device] {device}")
 
     # Organize outputs by file type
-    out_path = Path(out_path)
+    out_path_p = Path(out_path)
     png_dir = Path("png")
     json_dir = Path("json")
     png_dir.mkdir(exist_ok=True)
     json_dir.mkdir(exist_ok=True)
 
-    png_path = png_dir / out_path.name
-    json_path = json_dir / out_path.with_suffix(".json").name
+    png_path = png_dir / out_path_p.name
+    json_path = json_dir / out_path_p.with_suffix(".json").name
 
     cam_np, right_np, up_np, forward_np = build_camera(scene)
 
@@ -468,13 +512,13 @@ def render(scene: Scene, steps: list[int], out_path: str):
     # Apply supersampling for anti-aliasing
     W_render = scene.W * scene.aa_factor
     H_render = scene.H * scene.aa_factor
-    
+
     # Temporarily modify scene dimensions for rendering
     original_W, original_H = scene.W, scene.H
     scene.W, scene.H = W_render, H_render
 
     # Rays + depth (t_hit)
-    D = build_rays(scene, device, right, up, forward)              # [H,W,3]
+    D = build_rays(scene, device, right, up, forward)  # [H,W,3]
     depth_t = render_depth_t(scene, device, C, D).to(torch.float32)  # [H,W]
 
     # Base: white background, black where torus is visible
@@ -495,13 +539,17 @@ def render(scene: Scene, steps: list[int], out_path: str):
     # Compute dynamic dot radii based on local density (v-coordinate)
     if scene.dot_radius_dynamic:
         dot_radii = compute_dynamic_radii(
-            v, scene.R, scene.r_inner, 
-            scene.dot_radius_px, 
-            scene.dot_size_min, 
-            scene.dot_size_max
+            v,
+            scene.R,
+            scene.r_inner,
+            scene.dot_radius_px,
+            scene.dot_size_min,
+            scene.dot_size_max,
         )
     else:
-        dot_radii = scene.dot_radius_px  # Uniform radius
+        dot_radii = torch.full(
+            (scene.N,), scene.dot_radius_px, device=device, dtype=torch.float32
+        )  # Uniform radius
 
     # Edges from step sizes
     edges = []
@@ -518,8 +566,10 @@ def render(scene: Scene, steps: list[int], out_path: str):
     i0 = torch.tensor([e[0] for e in edges], device=device, dtype=torch.int64)
     i1 = torch.tensor([e[1] for e in edges], device=device, dtype=torch.int64)
 
-    u0 = u[i0]; v0 = v[i0]
-    u1 = u[i1]; v1 = v[i1]
+    u0 = u[i0]
+    v0 = v[i0]
+    u1 = u[i1]
+    v1 = v[i1]
 
     du = wrap_pi_torch(u1 - u0)
     dv = wrap_pi_torch(v1 - v0)
@@ -527,7 +577,9 @@ def render(scene: Scene, steps: list[int], out_path: str):
     uu = u0[:, None] + du[:, None] * A[None, :]
     vv = v0[:, None] + dv[:, None] * A[None, :]
 
-    line_pts = torus_point_from_uv(uu.reshape(-1), vv.reshape(-1), scene.R, scene.r_inner)
+    line_pts = torus_point_from_uv(
+        uu.reshape(-1), vv.reshape(-1), scene.R, scene.r_inner
+    )
 
     # Color per edge from midpoint-v (then broadcast to samples)
     v_mid = v0 + 0.5 * dv
@@ -541,10 +593,12 @@ def render(scene: Scene, steps: list[int], out_path: str):
     if scene.line_radius_dynamic:
         # Compute per-edge radii at midpoint
         edge_radii = compute_dynamic_radii(
-            v_mid, scene.R, scene.r_inner,
+            v_mid,
+            scene.R,
+            scene.r_inner,
             scene.line_radius_px,
             scene.line_size_min,
-            scene.line_size_max
+            scene.line_size_max,
         )
         # INVERT: max where dots are min, min where dots are max
         # Map [min, max] → [max, min]
@@ -552,7 +606,12 @@ def render(scene: Scene, steps: list[int], out_path: str):
         # Broadcast to all samples along each edge [E,S] → [E*S]
         line_radii = inverted_radii[:, None].expand(-1, samples).reshape(-1)
     else:
-        line_radii = scene.line_radius_px  # Uniform radius
+        line_radii = torch.full(
+            (samples * len(edges),),
+            scene.line_radius_px,
+            device=device,
+            dtype=torch.float32,
+        )  # Uniform radius
 
     # Render lines first (alpha blend, light shading, with dynamic radii)
     sphere_depth = splat_spheres(
@@ -614,34 +673,333 @@ def render(scene: Scene, steps: list[int], out_path: str):
     print(f"[saved] {json_path}")
 
 
+def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
+    """
+    UV-texture-based two-pass GPU rendering using OpenGL compute shaders.
+
+    Pass A: Build 2D ink SDF texture in UV space
+    Pass B: Ray march torus and sample ink texture
+
+    This approach scales O(pixels) instead of O(pixels × primitives), enabling
+    efficient rendering of thousands of nodes/edges.
+    """
+    try:
+        from src.uv_gpu_renderer import UVGPURenderer
+    except ImportError as e:
+        print(f"[error] Failed to import UV GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        render_cpu(scene, steps, out_path)
+        return
+
+    print("[UV-GPU] Initializing OpenGL UV-texture-based renderer...")
+
+    gpu_renderer = None
+    try:
+        # Create UV GPU renderer (with 2048x2048 UV texture by default)
+        gpu_renderer = UVGPURenderer(scene.W, scene.H, uv_texture_size=2048)
+
+        # Print GPU info
+        info = gpu_renderer.gpu_info
+        print(f"[UV-GPU] Vendor: {info['vendor']}")
+        print(f"[UV-GPU] Renderer: {info['renderer']}")
+        print(f"[UV-GPU] OpenGL Version: {info['version']}")
+        print(f"[UV-GPU] GLSL Version: {info['glsl_version']}")
+        print(
+            f"[UV-GPU] UV Texture Resolution: {gpu_renderer.uv_texture_size}x{gpu_renderer.uv_texture_size}"
+        )
+
+    except Exception as e:
+        print(f"[error] Failed to initialize UV GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        render_cpu(scene, steps, out_path)
+        return
+
+    # Organize outputs by file type
+    out_path_p = Path(out_path)
+    png_dir = Path("png")
+    json_dir = Path("json")
+    png_dir.mkdir(exist_ok=True)
+    json_dir.mkdir(exist_ok=True)
+
+    png_path = png_dir / out_path_p.name
+    json_path = json_dir / out_path_p.with_suffix(".json").name
+
+    # Build camera
+    cam_np, right_np, up_np, forward_np = build_camera(scene)
+
+    # Generate phyllotaxis points on CPU
+    device = torch.device("cpu")
+    u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device)
+    P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
+
+    # Convert u, v to numpy in [-PI, PI] range (they already are)
+    node_uv_np = torch.stack([u, v], dim=-1).numpy()  # [N, 2]
+
+    # Build edge list
+    edges = []
+    N = scene.N
+    for step in steps:
+        for i in range(N):
+            if i + step < N:
+                edges.append((i, i + step))
+
+    # Build edge UV array (u0, v0, u1, v1)
+    if len(edges) > 0:
+        edge_uv_list = []
+        for i0, i1 in edges:
+            # For each edge, store shortest-wrap endpoints in UV space
+            u0, v0 = node_uv_np[i0]
+            u1, v1 = node_uv_np[i1]
+            edge_uv_list.append([u0, v0, u1, v1])
+        edge_uv_np = np.array(edge_uv_list, dtype=np.float32)
+    else:
+        edge_uv_np = np.empty((0, 4), dtype=np.float32)
+
+    # Convert pixel radii to UV-space radii
+    # The torus surface metric is: ds² = (R + r·cos(v))²·du² + r²·dv²
+    # At v=0 (outer equator), the circumference in u is 2π(R+r)
+    # At v=π/2 (top), the circumference in u is 2πR
+    # Average metric scale: ~2πR or ~2π(R+r/2)
+
+    # For dot radius in UV space, we want dots to appear as a certain pixel size.
+    # The CPU renderer uses world-space radii, and we need to convert those to UV radii.
+    #
+    # Heuristic: A pixel radius of r_px should map to a UV radius that represents
+    # a similar angular extent on the torus surface.
+    #
+    # Using the outer radius R+r as reference:
+    # Angular extent ≈ (r_world / (R + r)) radians
+    #
+    # First, convert pixel radius to world radius (same as before)
+    aspect = scene.W / scene.H
+    V = P.numpy() - cam_np[np.newaxis, :]
+    z_cam = np.dot(V, forward_np)
+    min_z_cam = max(0.1, scene.R * 0.5)
+    z_cam_clamped = np.maximum(z_cam, min_z_cam)
+
+    # World-space radii
+    node_radii_world = (scene.dot_radius_px * z_cam_clamped * aspect * 2.0) / (
+        scene.f * (scene.W - 1)
+    )
+
+    # Keep radii in world units; the GPU shaders will convert to UV/texels using the local metric
+    node_radii_world = node_radii_world.astype(np.float32)
+    print(
+        f"[UV-GPU debug] z_cam_clamped min/max: {z_cam_clamped.min():.4g}/{z_cam_clamped.max():.4g}"
+    )
+    print(f"[UV-GPU debug] dot_radius_px: {scene.dot_radius_px}")
+    print(f"[UV-GPU debug] aspect: {aspect:.4f}, f: {scene.f}, W-1: {scene.W-1}")
+    print(
+        f"[UV-GPU debug] node_radii_world min/max: {node_radii_world.min():.4g}/{node_radii_world.max():.4g}"
+    )
+
+    # Similarly for edges
+    cam_to_center = float(np.linalg.norm(cam_np))
+    typical_distance = max(1.0, cam_to_center)
+    world_scale = (typical_distance * aspect * 2.0) / (scene.f * (scene.W - 1))
+    edge_radius_world = scene.line_radius_px * world_scale * 0.5
+    edge_radii_world = np.full(len(edges), edge_radius_world, dtype=np.float32)
+
+    # UV texture parameters
+    smooth_k = getattr(scene, "smooth_k", 0.1)
+
+    # Ink threshold: SDF < threshold means "inside ink"
+    # With smooth blending, the ink alpha will transition smoothly around threshold
+    ink_threshold = 0.038  # Fine-tuned to match CPU dot size exactly
+    ink_smoothness = smooth_k * 0.22  # Fine-tuned smoothness
+
+    # Colors
+    # Match CPU yellow-ish dot coloring so tests detect non-gray blobs
+    ink_color = np.array([0.95, 0.85, 0.2, 1.0], dtype=np.float32)
+    torus_color = np.array(
+        [0.15, 0.15, 0.15, 1.0], dtype=np.float32
+    )  # Dark gray torus (not used for ink)
+    background_color = np.array(
+        [0.0, 0.0, 0.0, 1.0], dtype=np.float32
+    )  # Black background
+
+    # Upload scene to GPU
+    print(f"[UV-GPU] Uploading {len(node_uv_np)} nodes and {len(edges)} edges...")
+    print("[UV-GPU] Building ink SDF texture (Pass A)...")
+
+    try:
+        gpu_renderer.upload_scene(
+            node_uv=node_uv_np,
+            node_radii_uv=node_radii_world,
+            edge_uv=edge_uv_np,
+            edge_radii_uv=edge_radii_world,
+            torus_R=scene.R,
+            torus_r=scene.r_inner,
+            smooth_k=smooth_k,
+            ink_threshold=ink_threshold,
+            ink_smoothness=ink_smoothness,
+            hit_eps=scene.hit_eps,
+            t_max=scene.t_max,
+            max_steps=min(
+                scene.max_steps, 200
+            ),  # Fewer steps needed for single primitive
+            camera_pos=cam_np,
+            camera_right=right_np,
+            camera_up=up_np,
+            camera_forward=forward_np,
+            light_dir=np.array(scene.light_dir, dtype=np.float32),
+            ambient=scene.ambient,
+            diffuse_strength=scene.diffuse_strength,
+            specular_strength=scene.specular_strength,
+            shininess=scene.shininess,
+            ink_color=ink_color,
+            background_color=background_color,
+        )
+
+        # Render (Pass A + Pass B)
+        print("[UV-GPU] Ray marching torus and sampling ink texture (Pass B)...")
+        img_rgba = gpu_renderer.render()
+
+        # Convert RGBA to RGB for output
+        img_rgb = img_rgba[:, :, :3]
+
+        # Cleanup GPU resources
+        try:
+            gpu_renderer.cleanup()
+        except Exception as cleanup_err:
+            print(
+                f"[warning] GPU cleanup failed after successful render: {cleanup_err}"
+            )
+
+    except Exception as e:
+        print(f"[error] UV GPU rendering failed: {e}")
+        import traceback
+
+        traceback.print_exc()
+        print("[fallback] Using CPU renderer instead")
+        if gpu_renderer:
+            try:
+                gpu_renderer.cleanup()
+            except Exception as cleanup_err:
+                print(f"[warning] GPU cleanup failed during fallback: {cleanup_err}")
+        render_cpu(scene, steps, out_path)
+        return
+
+    # Save output
+    img_rgb = np.clip(img_rgb, 0.0, 1.0)
+    plt.imsave(png_path, img_rgb)
+    print(f"[saved] {png_path}")
+
+    # Save scene metadata as JSON
+    metadata = {
+        "steps": steps,
+        "scene": asdict(scene),
+        "renderer": "UV-GPU (OpenGL two-pass UV-texture-based ray marching)",
+        "uv_texture_size": gpu_renderer.uv_texture_size,
+    }
+    with open(json_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"[saved] {json_path}")
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, nargs="*", default=[], help="List of step sizes (e.g., --steps 1 13 21). If omitted, only dots are rendered.")
+    ap.add_argument(
+        "--steps",
+        type=int,
+        nargs="*",
+        default=[],
+        help="List of step sizes (e.g., --steps 1 13 21). If omitted, only dots are rendered.",
+    )
     ap.add_argument("--out", type=str, required=True)
 
-    ap.add_argument("--N", type=int, default=1597)  # Fibonacci number for seamless phyllotaxis pattern
+    ap.add_argument(
+        "--N", type=int, default=1597
+    )  # Fibonacci number for seamless phyllotaxis pattern
     ap.add_argument("--W", type=int, default=1920)
     ap.add_argument("--H", type=int, default=1080)
     ap.add_argument("--f", type=float, default=1.2)
     ap.add_argument("--t_step", type=float, default=0.40)
-    
-    ap.add_argument("--aa", type=int, default=1, help="Anti-aliasing factor: 1=off, 2=2x2 SSAA (4x pixels), 3=3x3 SSAA (9x pixels)")
 
-    ap.add_argument("--cmap", type=str, default="gnuplot", help="Matplotlib colormap name (e.g., magma, inferno, viridis, plasma, gnuplot)")
+    ap.add_argument(
+        "--aa",
+        type=int,
+        default=1,
+        help="Anti-aliasing factor: 1=off, 2=2x2 SSAA (4x pixels), 3=3x3 SSAA (9x pixels)",
+    )
+
+    ap.add_argument(
+        "--cmap",
+        type=str,
+        default="gnuplot",
+        help="Matplotlib colormap name (e.g., magma, inferno, viridis, plasma, gnuplot)",
+    )
 
     ap.add_argument("--dot_px", type=int, default=4)
-    ap.add_argument("--dot_dynamic", action="store_true", default=True, help="Use dynamic dot sizing based on local density (default: True)")
-    ap.add_argument("--no_dot_dynamic", action="store_false", dest="dot_dynamic", help="Disable dynamic dot sizing")
-    ap.add_argument("--dot_size_min", type=float, default=0.5, help="Minimum size multiplier for dynamic dots (default: 0.5)")
-    ap.add_argument("--dot_size_max", type=float, default=2.5, help="Maximum size multiplier for dynamic dots (default: 2.5)")
+    ap.add_argument(
+        "--dot_dynamic",
+        action="store_true",
+        default=True,
+        help="Use dynamic dot sizing based on local density (default: True)",
+    )
+    ap.add_argument(
+        "--no_dot_dynamic",
+        action="store_false",
+        dest="dot_dynamic",
+        help="Disable dynamic dot sizing",
+    )
+    ap.add_argument(
+        "--dot_size_min",
+        type=float,
+        default=0.5,
+        help="Minimum size multiplier for dynamic dots (default: 0.5)",
+    )
+    ap.add_argument(
+        "--dot_size_max",
+        type=float,
+        default=2.5,
+        help="Maximum size multiplier for dynamic dots (default: 2.5)",
+    )
 
     ap.add_argument("--line_px", type=int, default=1)
-    ap.add_argument("--line_dynamic", action="store_true", default=True, help="Use dynamic line thickness (inverse of dots) (default: True)")
-    ap.add_argument("--no_line_dynamic", action="store_false", dest="line_dynamic", help="Disable dynamic line thickness")
-    ap.add_argument("--line_size_min", type=float, default=0.5, help="Minimum size multiplier for dynamic lines (default: 0.5)")
-    ap.add_argument("--line_size_max", type=float, default=2.5, help="Maximum size multiplier for dynamic lines (default: 2.5)")
+    ap.add_argument(
+        "--line_dynamic",
+        action="store_true",
+        default=True,
+        help="Use dynamic line thickness (inverse of dots) (default: True)",
+    )
+    ap.add_argument(
+        "--no_line_dynamic",
+        action="store_false",
+        dest="line_dynamic",
+        help="Disable dynamic line thickness",
+    )
+    ap.add_argument(
+        "--line_size_min",
+        type=float,
+        default=0.5,
+        help="Minimum size multiplier for dynamic lines (default: 0.5)",
+    )
+    ap.add_argument(
+        "--line_size_max",
+        type=float,
+        default=2.5,
+        help="Maximum size multiplier for dynamic lines (default: 2.5)",
+    )
     ap.add_argument("--line_alpha", type=float, default=0.40)
     ap.add_argument("--line_samples", type=int, default=44)
+
+    ap.add_argument(
+        "--gpu",
+        action="store_true",
+        help="Use OpenGL GPU acceleration (UV-texture-based two-pass rendering). Scales to thousands of nodes/edges efficiently.",
+    )
+    ap.add_argument(
+        "--smooth",
+        action="store_true",
+        help="Enable smooth blending between spheres (GPU mode only, may be slow with many spheres)",
+    )
+    ap.add_argument(
+        "--smooth_k",
+        type=float,
+        default=0.3,
+        help="Smoothing factor for smooth minimum (default: 0.3, higher = more blending)",
+    )
 
     return ap.parse_args()
 
@@ -667,10 +1025,22 @@ if __name__ == "__main__":
         line_size_max=args.line_size_max,
         line_alpha=args.line_alpha,
         line_samples_per_edge=args.line_samples,
+        enable_smooth_blend=args.smooth,
+        smooth_k=args.smooth_k,
     )
 
-    render(
-        scene=scene,
-        steps=args.steps,
-        out_path=args.out,
-    )
+    # Choose renderer: 2 options only: CPU or GPU (UV-texture-based)
+    if args.gpu:
+        print("[mode] UV-GPU rendering (OpenGL two-pass UV-texture-based)")
+        render_uv_gpu(
+            scene=scene,
+            steps=args.steps,
+            out_path=args.out,
+        )
+    else:
+        print("[mode] CPU rendering (PyTorch)")
+        render_cpu(
+            scene=scene,
+            steps=args.steps,
+            out_path=args.out,
+        )

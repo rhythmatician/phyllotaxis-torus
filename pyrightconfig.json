@@ -1,0 +1,28 @@
+{
+    "include": [
+        "src",
+        "tests",
+        "torus_net_gpu.py"
+    ],
+    "exclude": [
+        "**/__pycache__",
+        ".venv",
+        "venv"
+    ],
+    "reportGeneralTypeIssues": "warning",
+    "reportOptionalMemberAccess": "warning",
+    "typeCheckingMode": "basic",
+    "stubPath": "typings",
+    "ignore": [
+        "src/**/gpu_renderer.py"
+    ],
+    "reportIncompatibleMethodOverride": "warning",
+    "reportIncompatibleVariableOverride": "warning",
+    "reportInconsistentConstructor": "warning",
+    "reportUnnecessaryTypeIgnoreComment": "warning",
+    "reportUnusedImport": "warning",
+    "reportUnusedClass": "warning",
+    "reportUnusedFunction": "warning",
+    "reportUnusedVariable": "warning",
+    "reportDuplicateImport": "warning"
+}

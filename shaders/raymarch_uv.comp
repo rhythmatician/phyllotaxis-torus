@@ -1,0 +1,204 @@
+#version 430
+
+// Pass B: Ray march torus and sample ink SDF texture
+// This shader ray-marches only the torus surface (O(1) primitive per pixel),
+// then samples the pre-computed ink SDF texture to determine coloring.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Output: RGBA image
+layout(rgba32f, binding = 0) uniform image2D outputImage;
+
+// Input: Ink SDF texture (from Pass A)
+uniform sampler2D inkSDFTexture;
+
+// Uniforms: Scene parameters
+uniform int screenWidth;
+uniform int screenHeight;
+uniform float torusR;  // Major radius
+uniform float torusr;  // Minor radius
+uniform float inkThreshold;  // SDF threshold for ink visibility
+uniform float inkSmoothness;  // Smoothness of ink edge
+uniform float hit_eps;
+uniform float t_max;
+uniform int max_steps;
+
+// Uniforms: Camera
+uniform vec3 camera_pos;
+uniform vec3 camera_right;
+uniform vec3 camera_up;
+uniform vec3 camera_forward;
+
+// Uniforms: Lighting
+uniform vec3 light_dir;
+uniform float ambient;
+uniform float diffuse_strength;
+uniform float specular_strength;
+uniform float shininess;
+
+// Uniforms: Colors
+uniform vec4 inkColor;         // Color for ink features
+uniform vec4 backgroundColor;  // Background color
+
+// Constants
+const float PI = 3.14159265359;
+const float TWO_PI = 6.28318530718;
+
+// Torus SDF: Inside tube is negative, outside is positive
+float torus_sdf(vec3 p, float R, float r) {
+    float rho = length(p.xy);
+    float d_ring = length(vec2(rho - R, p.z));
+    return d_ring - r;  // Positive outside the tube, negative inside
+}
+
+// Hollow torus SDF: cavity inside, solid outside
+// Inside the tube (cavity): negative SDF
+// Outside the tube (solid): positive SDF
+// For ray marching from inside the cavity, we look for SDF crossing zero outward
+float hollow_torus_sdf(vec3 p, float R, float r) {
+    float rho = length(p.xy);
+    float d_ring = length(vec2(rho - R, p.z));
+    return d_ring - r;  // Negative inside cavity, positive outside solid
+}
+
+// Estimate normal via gradient
+vec3 estimate_normal(vec3 p, float R, float r) {
+    const vec3 e = vec3(0.01, 0.0, 0.0);  // Increased epsilon for better gradient
+    vec3 grad = vec3(
+        hollow_torus_sdf(p + e.xyy, R, r) - hollow_torus_sdf(p - e.xyy, R, r),
+        hollow_torus_sdf(p + e.yxy, R, r) - hollow_torus_sdf(p - e.yxy, R, r),
+        hollow_torus_sdf(p + e.yyx, R, r) - hollow_torus_sdf(p - e.yyx, R, r)
+    );
+    float grad_len = length(grad);
+    if (grad_len < 1e-6) return vec3(0.0, 0.0, 1.0);  // Fallback if gradient is degenerate
+    return grad / grad_len;
+}
+
+// Compute UV coordinates for a point on the torus
+vec2 compute_uv(vec3 p, float R) {
+    // u = atan(y, x) in [-PI, PI]
+    float u = atan(p.y, p.x);
+    
+    // v = atan(z, rho - R) in [-PI, PI]
+    float rho = length(p.xy);
+    float v = atan(p.z, rho - R);
+    
+    return vec2(u, v);
+}
+
+// Convert UV from [-PI, PI] to texture coordinates [0, 1]
+vec2 uv_to_texcoord(vec2 uv) {
+    return vec2(
+        (uv.x + PI) / TWO_PI,
+        (uv.y + PI) / TWO_PI
+    );
+}
+
+// Phong shading
+vec3 phong_shade(vec3 normal, vec3 view_dir, vec3 light_dir, vec3 base_color) {
+    // Ambient
+    vec3 color = ambient * base_color;
+    
+    // Diffuse
+    float diff = max(dot(normal, light_dir), 0.0);
+    color += diffuse_strength * diff * base_color;
+    
+    // Specular (modulated by base color to avoid pure white dominating)
+    vec3 reflect_dir = reflect(-light_dir, normal);
+    float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
+    color += specular_strength * spec * base_color;
+    
+    return color;
+}
+
+// Smooth step function for ink blending
+float smooth_ink_alpha(float sdf, float threshold, float smoothness) {
+    // sdf < 0 means inside ink feature
+    // Create smooth transition around threshold
+    float edge_dist = sdf - threshold;
+    return 1.0 - smoothstep(-smoothness, smoothness, edge_dist);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    
+    // Check bounds
+    if (pixel.x >= screenWidth || pixel.y >= screenHeight) {
+        return;
+    }
+    
+    // Compute ray direction
+    float aspect = float(screenWidth) / float(screenHeight);
+    float u = (2.0 * float(pixel.x) / float(screenWidth) - 1.0) * aspect;
+    float v = 1.0 - 2.0 * float(pixel.y) / float(screenHeight);
+    
+    vec3 ray_origin = camera_pos;
+    vec3 ray_dir = normalize(camera_forward + u * camera_right + v * camera_up);
+    
+    // Ray march the torus
+    float t = 0.0;
+    bool hit = false;
+    vec3 hit_pos;
+    
+    for (int step = 0; step < max_steps; step++) {
+        hit_pos = ray_origin + t * ray_dir;
+        float dist = hollow_torus_sdf(hit_pos, torusR, torusr);
+        
+        if (dist < hit_eps) {
+            hit = true;
+            break;
+        }
+        
+        if (t > t_max) {
+            break;
+        }
+        
+        // Sphere tracing: for negative dist (inside cavity), use very small steps
+        // For positive dist (outside), use normal sphere tracing
+        float step_size;
+        if (dist < 0.0) {
+            // Inside cavity: take very small steps (linear interpolation to surface)
+            // 20% of distance to surface to be safe
+            step_size = -dist * 0.2;
+            // Clamp to reasonable bounds
+            step_size = max(step_size, 0.01);
+            step_size = min(step_size, 0.05);
+        } else {
+            // Outside cavity: use standard sphere tracing
+            step_size = dist + hit_eps * 0.1;
+        }
+        t += step_size;
+    }
+    
+    vec4 final_color;
+    
+    if (hit) {
+        // Compute UV coordinates at hit point
+        vec2 uv = compute_uv(hit_pos, torusR);
+        vec2 tex_coord = uv_to_texcoord(uv);
+        
+        // Sample ink SDF texture
+        float ink_sdf = texture(inkSDFTexture, tex_coord).r;
+        
+        // Compute ink alpha based on SDF value
+        float ink_alpha = smooth_ink_alpha(ink_sdf, inkThreshold, inkSmoothness);
+        
+        // If ink is present, render it with shading to match CPU
+        if (ink_alpha > 0.1) {
+            // Compute normal for shading
+            vec3 normal = estimate_normal(hit_pos, torusR, torusr);
+            vec3 view_dir = normalize(camera_pos - hit_pos);
+            vec3 shaded_ink = phong_shade(normal, view_dir, light_dir, inkColor.rgb);
+            final_color = vec4(shaded_ink, 1.0);
+        } else {
+            // Non-ink areas render as black
+            final_color = vec4(0.0, 0.0, 0.0, 1.0);
+        }
+    } else {
+        // Ray missed - use background color
+        final_color = backgroundColor;
+    }
+    
+    // Write output
+    imageStore(outputImage, pixel, final_color);
+}

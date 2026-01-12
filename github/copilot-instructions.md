@@ -81,7 +81,7 @@ Key functions:
 
 ### Running a Render
 ```powershell
-& C:\Users\rhyth\git\torus\.venv\Scripts\Activate.ps1
+& C:\Users\rhyth\git\torus\.venv\Scripts\Activate.ps1  # Run this at the start of each session (Just once is enough)
 python torus_net_gpu.py --steps 13 21 --out spiral.png
 # Output: png/spiral.png, json/spiral.json
 ```

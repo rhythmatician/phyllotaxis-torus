@@ -1,3 +1,7 @@
-numpy
-torch
 matplotlib
+moderngl
+numpy
+pytest
+scikit-image
+scipy
+torch
