@@ -1,0 +1,68 @@
+#version 430
+
+// Pass A - Stage 2: Jump Flood Algorithm for distance propagation
+// Iterative propagation with exponentially decreasing jump sizes
+// O(texels × log(texels)) complexity
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Input/Output: Seed texture (read from one, write to other for ping-pong)
+layout(r32i, binding = 0) uniform iimage2D seedTextureRead;
+layout(r32i, binding = 1) uniform iimage2D seedTextureWrite;
+
+// Uniforms
+uniform int texWidth;
+uniform int texHeight;
+uniform int jumpStep;  // Current jump distance (decreases each pass)
+
+// Constants
+const int SEED_NONE = -1;
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    
+    if (texel.x >= texWidth || texel.y >= texHeight) {
+        return;
+    }
+    
+    // Read current seed
+    int current_seed = imageLoad(seedTextureRead, texel).r;
+    int best_seed = current_seed;
+    float best_dist_sq = (current_seed == SEED_NONE) ? 1e10 : 0.0;
+    
+    // Check 9 neighbors at current jump distance
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            // Neighbor position with wrapping
+            ivec2 neighbor = texel + ivec2(dx, dy) * jumpStep;
+            neighbor.x = (neighbor.x + texWidth) % texWidth;
+            neighbor.y = (neighbor.y + texHeight) % texHeight;
+            
+            int neighbor_seed = imageLoad(seedTextureRead, neighbor).r;
+            
+            if (neighbor_seed != SEED_NONE) {
+                // Compute distance-squared from this texel to neighbor
+                // (Approximate - actual seed position unknown at this stage)
+                ivec2 delta = neighbor - texel;
+                
+                // Handle wrapping for distance calculation
+                if (abs(delta.x) > texWidth / 2) {
+                    delta.x = delta.x > 0 ? delta.x - texWidth : delta.x + texWidth;
+                }
+                if (abs(delta.y) > texHeight / 2) {
+                    delta.y = delta.y > 0 ? delta.y - texHeight : delta.y + texHeight;
+                }
+                
+                float dist_sq = float(delta.x * delta.x + delta.y * delta.y);
+                
+                if (dist_sq < best_dist_sq) {
+                    best_dist_sq = dist_sq;
+                    best_seed = neighbor_seed;
+                }
+            }
+        }
+    }
+    
+    // Write best seed
+    imageStore(seedTextureWrite, texel, ivec4(best_seed, 0, 0, 0));
+}

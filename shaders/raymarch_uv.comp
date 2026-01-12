@@ -45,11 +45,13 @@ uniform vec4 backgroundColor;  // Background color
 const float PI = 3.14159265359;
 const float TWO_PI = 6.28318530718;
 
-// Torus SDF
+// Inverted Torus SDF: "Outside is solid, only tube cavity is empty"
+// Negative inside the tube, positive everywhere else (solid)
 float torus_sdf(vec3 p, float R, float r) {
     float rho = length(p.xy);
     float d_ring = length(vec2(rho - R, p.z));
-    return d_ring - r;
+    // Negate: inside tube is negative (empty), outside is positive (solid)
+    return -(d_ring - r);
 }
 
 // Estimate normal via gradient

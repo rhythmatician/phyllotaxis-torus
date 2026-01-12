@@ -44,9 +44,28 @@ class UVGPURenderer:
         # Get GPU info
         self.gpu_info = self._get_gpu_info()
         
-        # Load and compile shaders
-        self.ink_sdf_program = self._compile_shader('ink_sdf.comp')
+        # Load and compile shaders for three-stage JFA pipeline
+        self.ink_seed_program = self._compile_shader('ink_seed.comp')
+        self.ink_jfa_program = self._compile_shader('ink_jfa.comp')
+        self.ink_finalize_program = self._compile_shader('ink_finalize.comp')
         self.raymarch_program = self._compile_shader('raymarch_uv.comp')
+        
+        # Create seed textures for JFA (ping-pong buffers, R32I format for seed IDs)
+        self.seed_texture_a = self.ctx.texture(
+            (uv_texture_size, uv_texture_size),
+            components=1,
+            dtype='i4'
+        )
+        self.seed_texture_a.repeat_x = True
+        self.seed_texture_a.repeat_y = True
+        
+        self.seed_texture_b = self.ctx.texture(
+            (uv_texture_size, uv_texture_size),
+            components=1,
+            dtype='i4'
+        )
+        self.seed_texture_b.repeat_x = True
+        self.seed_texture_b.repeat_y = True
         
         # Create UV ink SDF texture (R32F format for signed distance)
         self.ink_sdf_texture = self.ctx.texture(
@@ -181,14 +200,24 @@ class UVGPURenderer:
             output_size = self.width * self.height * 4 * 4  # RGBA float32
             self.output_buffer = self.ctx.buffer(reserve=output_size)
         
-        # Set uniforms for Pass A (ink SDF)
-        self.ink_sdf_program['numNodes'] = self.num_nodes
-        self.ink_sdf_program['numEdges'] = self.num_edges
-        self.ink_sdf_program['torusR'] = torus_R
-        self.ink_sdf_program['torusr'] = torus_r
-        self.ink_sdf_program['smoothK'] = smooth_k
-        self.ink_sdf_program['texWidth'] = self.uv_texture_size
-        self.ink_sdf_program['texHeight'] = self.uv_texture_size
+        # Set uniforms for Pass A - Stage 1 (seed)
+        self.ink_seed_program['numNodes'] = self.num_nodes
+        self.ink_seed_program['numEdges'] = self.num_edges
+        self.ink_seed_program['texWidth'] = self.uv_texture_size
+        self.ink_seed_program['texHeight'] = self.uv_texture_size
+        
+        # Set uniforms for Pass A - Stage 2 (JFA)
+        self.ink_jfa_program['texWidth'] = self.uv_texture_size
+        self.ink_jfa_program['texHeight'] = self.uv_texture_size
+        
+        # Set uniforms for Pass A - Stage 3 (finalize)
+        self.ink_finalize_program['numNodes'] = self.num_nodes
+        self.ink_finalize_program['numEdges'] = self.num_edges
+        self.ink_finalize_program['torusR'] = torus_R
+        self.ink_finalize_program['torusr'] = torus_r
+        self.ink_finalize_program['smoothK'] = smooth_k
+        self.ink_finalize_program['texWidth'] = self.uv_texture_size
+        self.ink_finalize_program['texHeight'] = self.uv_texture_size
         
         # Set uniforms for Pass B (ray march + sample)
         self.raymarch_program['screenWidth'] = self.width
@@ -221,31 +250,86 @@ class UVGPURenderer:
     
     def render(self) -> np.ndarray:
         """
-        Execute two-pass rendering and return RGBA image.
+        Execute three-stage JFA + ray marching rendering and return RGBA image.
         
-        Pass A: Build ink SDF texture in UV space
+        Pass A - Stage 1: Seed/splat primitives into UV buffer
+        Pass A - Stage 2: Jump Flood Algorithm for distance propagation
+        Pass A - Stage 3: Convert seeds to metric SDF
         Pass B: Ray march torus and sample ink texture
         
         Returns:
             RGBA image as numpy array [height, width, 4], float32 in [0, 1]
         """
-        # ===== PASS A: Build ink SDF texture =====
+        groups_x = (self.uv_texture_size + 7) // 8
+        groups_y = (self.uv_texture_size + 7) // 8
         
-        # Bind buffers for Pass A
+        # ===== PASS A - STAGE 1: Seed Primitives =====
+        
+        # Bind buffers
         self.node_uv_buffer.bind_to_storage_buffer(1)
         self.node_radii_buffer.bind_to_storage_buffer(2)
         self.edge_uv_buffer.bind_to_storage_buffer(3)
         self.edge_radii_buffer.bind_to_storage_buffer(4)
         
-        # Bind ink SDF texture as output
-        self.ink_sdf_texture.bind_to_image(0, read=False, write=True)
+        # Bind seed texture A as output
+        self.seed_texture_a.bind_to_image(0, read=False, write=True)
         
-        # Dispatch Pass A
-        groups_x = (self.uv_texture_size + 7) // 8
-        groups_y = (self.uv_texture_size + 7) // 8
-        self.ink_sdf_program.run(groups_x, groups_y, 1)
+        # Dispatch seed stage
+        self.ink_seed_program.run(groups_x, groups_y, 1)
         
-        # Ensure Pass A completes
+        # Memory barrier
+        self.ctx.memory_barrier(moderngl.SHADER_IMAGE_ACCESS_BARRIER_BIT)
+        
+        # ===== PASS A - STAGE 2: Jump Flood Algorithm =====
+        
+        # JFA: Start with jump step = half texture size, decrease by half each iteration
+        # Continue until jump step = 1
+        max_jump = self.uv_texture_size // 2
+        
+        # Ping-pong between texture A and B
+        read_texture = self.seed_texture_a
+        write_texture = self.seed_texture_b
+        
+        jump_step = max_jump
+        while jump_step >= 1:
+            # Set jump step uniform
+            self.ink_jfa_program['jumpStep'] = int(jump_step)
+            
+            # Bind textures
+            read_texture.bind_to_image(0, read=True, write=False)
+            write_texture.bind_to_image(1, read=False, write=True)
+            
+            # Dispatch JFA pass
+            self.ink_jfa_program.run(groups_x, groups_y, 1)
+            
+            # Memory barrier
+            self.ctx.memory_barrier(moderngl.SHADER_IMAGE_ACCESS_BARRIER_BIT)
+            
+            # Swap ping-pong buffers
+            read_texture, write_texture = write_texture, read_texture
+            
+            # Decrease jump step
+            jump_step = jump_step // 2
+        
+        # After JFA, final result is in read_texture
+        final_seed_texture = read_texture
+        
+        # ===== PASS A - STAGE 3: Finalize SDF =====
+        
+        # Bind seed texture (input) and SDF texture (output)
+        final_seed_texture.bind_to_image(0, read=True, write=False)
+        self.ink_sdf_texture.bind_to_image(1, read=False, write=True)
+        
+        # Bind geometry buffers
+        self.node_uv_buffer.bind_to_storage_buffer(2)
+        self.node_radii_buffer.bind_to_storage_buffer(3)
+        self.edge_uv_buffer.bind_to_storage_buffer(4)
+        self.edge_radii_buffer.bind_to_storage_buffer(5)
+        
+        # Dispatch finalize stage
+        self.ink_finalize_program.run(groups_x, groups_y, 1)
+        
+        # Memory barrier
         self.ctx.memory_barrier(moderngl.SHADER_IMAGE_ACCESS_BARRIER_BIT |
                                 moderngl.TEXTURE_FETCH_BARRIER_BIT)
         
@@ -301,6 +385,20 @@ class UVGPURenderer:
             self.output_buffer = None
         
         # Release textures (even if ctx fails)
+        try:
+            if self.seed_texture_a is not None:
+                self.seed_texture_a.release()
+                self.seed_texture_a = None
+        except Exception:
+            self.seed_texture_a = None
+        
+        try:
+            if self.seed_texture_b is not None:
+                self.seed_texture_b.release()
+                self.seed_texture_b = None
+        except Exception:
+            self.seed_texture_b = None
+        
         try:
             if self.ink_sdf_texture is not None:
                 self.ink_sdf_texture.release()

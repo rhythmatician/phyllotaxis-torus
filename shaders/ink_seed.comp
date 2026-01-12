@@ -1,0 +1,173 @@
+#version 430
+
+// Pass A - Stage 1: Seed/splat primitives into UV buffer
+// Rasterizes dots and edges as nearest seed IDs
+// O(primitives × primitive_pixels) instead of O(texels × primitives)
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Output: Seed texture storing nearest primitive ID
+layout(r32i, binding = 0) uniform iimage2D seedTexture;
+
+// Input: Node data (dots)
+layout(std430, binding = 1) buffer NodeUVBuffer {
+    vec2 nodeUV[];  // (u, v) coordinates for each node
+};
+
+layout(std430, binding = 2) buffer NodeRadiiBuffer {
+    float nodeRadii[];  // Radius for each dot in UV space
+};
+
+// Input: Edge data (lines)
+layout(std430, binding = 3) buffer EdgeUVBuffer {
+    vec4 edgeUV[];  // (u0, v0, u1, v1) for each edge
+};
+
+layout(std430, binding = 4) buffer EdgeRadiiBuffer {
+    float edgeRadii[];  // Radius for each line in UV space
+};
+
+// Uniforms
+uniform int numNodes;
+uniform int numEdges;
+uniform int texWidth;
+uniform int texHeight;
+
+// Constants
+const float PI = 3.14159265359;
+const float TWO_PI = 6.28318530718;
+const int SEED_NONE = -1;
+
+// Convert UV [-PI, PI] to texel coordinates
+ivec2 uv_to_texel(vec2 uv) {
+    float u_norm = (uv.x + PI) / TWO_PI;
+    float v_norm = (uv.y + PI) / TWO_PI;
+    
+    // Wrap to [0, 1]
+    u_norm = fract(u_norm);
+    v_norm = fract(v_norm);
+    
+    int x = int(u_norm * float(texWidth));
+    int y = int(v_norm * float(texHeight));
+    
+    // Clamp to valid range
+    x = clamp(x, 0, texWidth - 1);
+    y = clamp(y, 0, texHeight - 1);
+    
+    return ivec2(x, y);
+}
+
+// Seed a texel with a primitive ID (atomically keep closest)
+void seed_texel(ivec2 texel, int seed_id) {
+    if (texel.x >= 0 && texel.x < texWidth && texel.y >= 0 && texel.y < texHeight) {
+        // For now, just write the seed ID
+        // In a more sophisticated version, we'd check if there's already a closer seed
+        imageStore(seedTexture, texel, ivec4(seed_id, 0, 0, 0));
+    }
+}
+
+// Rasterize a dot (circle in UV space)
+void rasterize_dot(int node_idx) {
+    vec2 center_uv = nodeUV[node_idx];
+    float radius_uv = nodeRadii[node_idx];
+    
+    // Convert radius to approximate texel count
+    float radius_texels = radius_uv / (TWO_PI / float(texWidth));
+    int r_texels = int(ceil(radius_texels)) + 1;
+    
+    ivec2 center_texel = uv_to_texel(center_uv);
+    
+    // Seed ID: node_idx
+    int seed_id = node_idx;
+    
+    // Rasterize square around dot
+    for (int dy = -r_texels; dy <= r_texels; dy++) {
+        for (int dx = -r_texels; dx <= r_texels; dx++) {
+            ivec2 texel = center_texel + ivec2(dx, dy);
+            
+            // Wrap for toroidal topology
+            texel.x = (texel.x + texWidth) % texWidth;
+            texel.y = (texel.y + texHeight) % texHeight;
+            
+            seed_texel(texel, seed_id);
+        }
+    }
+}
+
+// Rasterize an edge (line segment in UV space)
+void rasterize_edge(int edge_idx) {
+    vec2 uv0 = edgeUV[edge_idx].xy;
+    vec2 uv1 = edgeUV[edge_idx].zw;
+    float radius_uv = edgeRadii[edge_idx];
+    
+    // Seed ID: numNodes + edge_idx
+    int seed_id = numNodes + edge_idx;
+    
+    // Convert endpoints to texels
+    ivec2 texel0 = uv_to_texel(uv0);
+    ivec2 texel1 = uv_to_texel(uv1);
+    
+    // Bresenham-style line rasterization with wrapping
+    int dx = texel1.x - texel0.x;
+    int dy = texel1.y - texel0.y;
+    
+    // Handle wrapping: take shortest path
+    if (abs(dx) > texWidth / 2) {
+        dx = dx > 0 ? dx - texWidth : dx + texWidth;
+    }
+    if (abs(dy) > texHeight / 2) {
+        dy = dy > 0 ? dy - texHeight : dy + texHeight;
+    }
+    
+    int steps = max(abs(dx), abs(dy));
+    if (steps == 0) steps = 1;
+    
+    float radius_texels = radius_uv / (TWO_PI / float(texWidth));
+    int r_texels = int(ceil(radius_texels)) + 1;
+    
+    // Rasterize line with thickness
+    for (int i = 0; i <= steps; i++) {
+        float t = float(i) / float(steps);
+        int x = texel0.x + int(t * float(dx));
+        int y = texel0.y + int(t * float(dy));
+        
+        // Rasterize square around line point
+        for (int py = -r_texels; py <= r_texels; py++) {
+            for (int px = -r_texels; px <= r_texels; px++) {
+                ivec2 texel = ivec2(x + px, y + py);
+                
+                // Wrap for toroidal topology
+                texel.x = (texel.x + texWidth) % texWidth;
+                texel.y = (texel.y + texHeight) % texHeight;
+                
+                seed_texel(texel, seed_id);
+            }
+        }
+    }
+}
+
+void main() {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    
+    // Initialize: each thread handles one node and one edge
+    int thread_id = int(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * 8);
+    
+    // Clear texel initially
+    if (texel.x < texWidth && texel.y < texHeight) {
+        imageStore(seedTexture, texel, ivec4(SEED_NONE, 0, 0, 0));
+    }
+    
+    barrier();
+    
+    // Rasterize dots (one per thread)
+    if (thread_id < numNodes) {
+        rasterize_dot(thread_id);
+    }
+    
+    barrier();
+    
+    // Rasterize edges (one per thread)
+    if (thread_id < numEdges) {
+        rasterize_edge(thread_id);
+    }
+}
