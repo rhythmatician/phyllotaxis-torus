@@ -27,6 +27,11 @@ def count_colored_spheres(img: np.ndarray, min_area: int = 50) -> dict:
     Returns:
         dict with sphere count and labeled regions
     """
+    
+    # Drop alpha channel if present
+    if img.shape[2] == 4:
+        img = img[:, :, :3]
+    
     # Create a mask for non-black pixels (potential sphere pixels)
     # A pixel is "colored" if it's not black and has distinct RGB channels
     is_colored = np.any(img > 0.1, axis=2)  # Not pure black
