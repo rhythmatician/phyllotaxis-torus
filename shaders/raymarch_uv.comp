@@ -1,0 +1,176 @@
+#version 430
+
+// Pass B: Ray march torus and sample ink SDF texture
+// This shader ray-marches only the torus surface (O(1) primitive per pixel),
+// then samples the pre-computed ink SDF texture to determine coloring.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// Output: RGBA image
+layout(rgba32f, binding = 0) uniform image2D outputImage;
+
+// Input: Ink SDF texture (from Pass A)
+uniform sampler2D inkSDFTexture;
+
+// Uniforms: Scene parameters
+uniform int screenWidth;
+uniform int screenHeight;
+uniform float torusR;  // Major radius
+uniform float torusr;  // Minor radius
+uniform float inkThreshold;  // SDF threshold for ink visibility
+uniform float inkSmoothness;  // Smoothness of ink edge
+uniform float hit_eps;
+uniform float t_max;
+uniform int max_steps;
+
+// Uniforms: Camera
+uniform vec3 camera_pos;
+uniform vec3 camera_right;
+uniform vec3 camera_up;
+uniform vec3 camera_forward;
+
+// Uniforms: Lighting
+uniform vec3 light_dir;
+uniform float ambient;
+uniform float diffuse_strength;
+uniform float specular_strength;
+uniform float shininess;
+
+// Uniforms: Colors
+uniform vec4 inkColor;         // Color for ink features
+uniform vec4 torusColor;       // Base torus color
+uniform vec4 backgroundColor;  // Background color
+
+// Constants
+const float PI = 3.14159265359;
+const float TWO_PI = 6.28318530718;
+
+// Torus SDF
+float torus_sdf(vec3 p, float R, float r) {
+    float rho = length(p.xy);
+    float d_ring = length(vec2(rho - R, p.z));
+    return d_ring - r;
+}
+
+// Estimate normal via gradient
+vec3 estimate_normal(vec3 p, float R, float r) {
+    const vec3 e = vec3(0.001, 0.0, 0.0);
+    return normalize(vec3(
+        torus_sdf(p + e.xyy, R, r) - torus_sdf(p - e.xyy, R, r),
+        torus_sdf(p + e.yxy, R, r) - torus_sdf(p - e.yxy, R, r),
+        torus_sdf(p + e.yyx, R, r) - torus_sdf(p - e.yyx, R, r)
+    ));
+}
+
+// Compute UV coordinates for a point on the torus
+vec2 compute_uv(vec3 p, float R) {
+    // u = atan(y, x) in [-PI, PI]
+    float u = atan(p.y, p.x);
+    
+    // v = atan(z, rho - R) in [-PI, PI]
+    float rho = length(p.xy);
+    float v = atan(p.z, rho - R);
+    
+    return vec2(u, v);
+}
+
+// Convert UV from [-PI, PI] to texture coordinates [0, 1]
+vec2 uv_to_texcoord(vec2 uv) {
+    return vec2(
+        (uv.x + PI) / TWO_PI,
+        (uv.y + PI) / TWO_PI
+    );
+}
+
+// Phong shading
+vec3 phong_shade(vec3 normal, vec3 view_dir, vec3 light_dir, vec3 base_color) {
+    // Ambient
+    vec3 color = ambient * base_color;
+    
+    // Diffuse
+    float diff = max(dot(normal, light_dir), 0.0);
+    color += diffuse_strength * diff * base_color;
+    
+    // Specular
+    vec3 reflect_dir = reflect(-light_dir, normal);
+    float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
+    color += specular_strength * spec * vec3(1.0);
+    
+    return color;
+}
+
+// Smooth step function for ink blending
+float smooth_ink_alpha(float sdf, float threshold, float smoothness) {
+    // sdf < 0 means inside ink feature
+    // Create smooth transition around threshold
+    float edge_dist = sdf - threshold;
+    return 1.0 - smoothstep(-smoothness, smoothness, edge_dist);
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    
+    // Check bounds
+    if (pixel.x >= screenWidth || pixel.y >= screenHeight) {
+        return;
+    }
+    
+    // Compute ray direction
+    float aspect = float(screenWidth) / float(screenHeight);
+    float u = (2.0 * float(pixel.x) / float(screenWidth) - 1.0) * aspect;
+    float v = 1.0 - 2.0 * float(pixel.y) / float(screenHeight);
+    
+    vec3 ray_origin = camera_pos;
+    vec3 ray_dir = normalize(camera_forward + u * camera_right + v * camera_up);
+    
+    // Ray march the torus
+    float t = 0.0;
+    bool hit = false;
+    vec3 hit_pos;
+    
+    for (int step = 0; step < max_steps; step++) {
+        hit_pos = ray_origin + t * ray_dir;
+        float dist = torus_sdf(hit_pos, torusR, torusr);
+        
+        if (dist < hit_eps) {
+            hit = true;
+            break;
+        }
+        
+        if (t > t_max) {
+            break;
+        }
+        
+        t += dist;
+    }
+    
+    vec4 final_color;
+    
+    if (hit) {
+        // Compute UV coordinates at hit point
+        vec2 uv = compute_uv(hit_pos, torusR);
+        vec2 tex_coord = uv_to_texcoord(uv);
+        
+        // Sample ink SDF texture
+        float ink_sdf = texture(inkSDFTexture, tex_coord).r;
+        
+        // Compute ink alpha based on SDF value
+        float ink_alpha = smooth_ink_alpha(ink_sdf, inkThreshold, inkSmoothness);
+        
+        // Blend between torus base color and ink color
+        vec3 base_color = mix(torusColor.rgb, inkColor.rgb, ink_alpha);
+        
+        // Compute shading
+        vec3 normal = estimate_normal(hit_pos, torusR, torusr);
+        vec3 view_dir = normalize(camera_pos - hit_pos);
+        vec3 shaded_color = phong_shade(normal, view_dir, light_dir, base_color);
+        
+        final_color = vec4(shaded_color, 1.0);
+    } else {
+        // Ray missed - use background color
+        final_color = backgroundColor;
+    }
+    
+    // Write output
+    imageStore(outputImage, pixel, final_color);
+}

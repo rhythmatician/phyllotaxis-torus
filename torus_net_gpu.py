@@ -1106,6 +1106,219 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     print(f"[saved] {json_path}")
 
 
+def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
+    """
+    UV-texture-based two-pass GPU rendering using OpenGL compute shaders.
+    
+    Pass A: Build 2D ink SDF texture in UV space
+    Pass B: Ray march torus and sample ink texture
+    
+    This approach scales O(pixels) instead of O(pixels × primitives), enabling
+    efficient rendering of thousands of nodes/edges.
+    """
+    try:
+        from src.uv_gpu_renderer import UVGPURenderer
+    except ImportError as e:
+        print(f"[error] Failed to import UV GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        render_cpu(scene, steps, out_path)
+        return
+    
+    print(f"[UV-GPU] Initializing OpenGL UV-texture-based renderer...")
+    
+    gpu_renderer = None
+    try:
+        # Create UV GPU renderer (with 2048x2048 UV texture by default)
+        gpu_renderer = UVGPURenderer(scene.W, scene.H, uv_texture_size=2048)
+        
+        # Print GPU info
+        info = gpu_renderer.gpu_info
+        print(f"[UV-GPU] Vendor: {info['vendor']}")
+        print(f"[UV-GPU] Renderer: {info['renderer']}")
+        print(f"[UV-GPU] OpenGL Version: {info['version']}")
+        print(f"[UV-GPU] GLSL Version: {info['glsl_version']}")
+        print(f"[UV-GPU] UV Texture Resolution: {gpu_renderer.uv_texture_size}x{gpu_renderer.uv_texture_size}")
+        
+    except Exception as e:
+        print(f"[error] Failed to initialize UV GPU renderer: {e}")
+        print("[fallback] Using CPU renderer instead")
+        render_cpu(scene, steps, out_path)
+        return
+    
+    # Organize outputs by file type
+    out_path = Path(out_path)
+    png_dir = Path("png")
+    json_dir = Path("json")
+    png_dir.mkdir(exist_ok=True)
+    json_dir.mkdir(exist_ok=True)
+    
+    png_path = png_dir / out_path.name
+    json_path = json_dir / out_path.with_suffix(".json").name
+    
+    # Build camera
+    cam_np, right_np, up_np, forward_np = build_camera(scene)
+    
+    # Generate phyllotaxis points on CPU
+    device = torch.device("cpu")
+    u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device)
+    P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
+    
+    # Colors (pingpong colormap, seam-free)
+    lut = build_lut(device, scene.cmap_name, 256)
+    t_raw = (v % (2.0 * math.pi)) / (2.0 * math.pi)
+    t_pp = pingpong01(t_raw)
+    cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
+    node_cols = lut[cidx]  # [N,3]
+    
+    # Convert u, v to numpy in [-PI, PI] range (they already are)
+    node_uv_np = torch.stack([u, v], dim=-1).numpy()  # [N, 2]
+    
+    # Build edge list
+    edges = []
+    N = scene.N
+    for step in steps:
+        for i in range(N):
+            if i + step < N:
+                edges.append((i, i + step))
+    
+    # Build edge UV array (u0, v0, u1, v1)
+    if len(edges) > 0:
+        edge_uv_list = []
+        for i0, i1 in edges:
+            # For each edge, store shortest-wrap endpoints in UV space
+            u0, v0 = node_uv_np[i0]
+            u1, v1 = node_uv_np[i1]
+            edge_uv_list.append([u0, v0, u1, v1])
+        edge_uv_np = np.array(edge_uv_list, dtype=np.float32)
+    else:
+        edge_uv_np = np.empty((0, 4), dtype=np.float32)
+    
+    # Convert pixel radii to UV-space radii
+    # The torus surface metric is: ds² = (R + r·cos(v))²·du² + r²·dv²
+    # At v=0 (outer equator), the circumference in u is 2π(R+r)
+    # At v=π/2 (top), the circumference in u is 2πR
+    # Average metric scale: ~2πR or ~2π(R+r/2)
+    
+    # For dot radius in UV space, we want dots to appear as a certain pixel size.
+    # The CPU renderer uses world-space radii, and we need to convert those to UV radii.
+    # 
+    # Heuristic: A pixel radius of r_px should map to a UV radius that represents
+    # a similar angular extent on the torus surface.
+    # 
+    # Using the outer radius R+r as reference:
+    # Angular extent ≈ (r_world / (R + r)) radians
+    # 
+    # First, convert pixel radius to world radius (same as before)
+    aspect = scene.W / scene.H
+    V = P.numpy() - cam_np[np.newaxis, :]
+    z_cam = np.dot(V, forward_np)
+    min_z_cam = max(0.1, scene.R * 0.5)
+    z_cam_clamped = np.maximum(z_cam, min_z_cam)
+    
+    # World-space radii
+    node_radii_world = (scene.dot_radius_px * z_cam_clamped * aspect * 2.0) / (scene.f * (scene.W - 1))
+    
+    # Convert to UV-space radii (angular radians)
+    # At outer edge: radius_uv ≈ radius_world / (R + r)
+    # At inner edge: radius_uv ≈ radius_world / (R - r)
+    # Use average: radius_uv ≈ radius_world / R
+    node_radii_uv = node_radii_world / scene.R  # [N]
+    
+    # Similarly for edges
+    cam_to_center = np.linalg.norm(cam_np)
+    typical_distance = max(1.0, cam_to_center)
+    world_scale = (typical_distance * aspect * 2.0) / (scene.f * (scene.W - 1))
+    edge_radius_world = scene.line_radius_px * world_scale * 0.5
+    edge_radii_uv = np.full(len(edges), edge_radius_world / scene.R, dtype=np.float32)
+    
+    # UV texture parameters
+    smooth_k = getattr(scene, "smooth_k", 0.1)
+    
+    # Ink threshold: SDF < threshold means "inside ink"
+    # With smooth blending, the ink alpha will transition smoothly around threshold=0
+    ink_threshold = 0.0
+    ink_smoothness = smooth_k  # Smoothness of ink edge (same as smooth_k)
+    
+    # Colors
+    ink_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)  # White ink
+    torus_color = np.array([0.1, 0.1, 0.1, 1.0], dtype=np.float32)  # Dark gray torus
+    background_color = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)  # Black background
+    
+    # Upload scene to GPU
+    print(f"[UV-GPU] Uploading {len(node_uv_np)} nodes and {len(edges)} edges...")
+    print(f"[UV-GPU] Building ink SDF texture (Pass A)...")
+    
+    try:
+        gpu_renderer.upload_scene(
+            node_uv=node_uv_np,
+            node_radii_uv=node_radii_uv,
+            edge_uv=edge_uv_np,
+            edge_radii_uv=edge_radii_uv,
+            torus_R=scene.R,
+            torus_r=scene.r_inner,
+            smooth_k=smooth_k,
+            ink_threshold=ink_threshold,
+            ink_smoothness=ink_smoothness,
+            hit_eps=scene.hit_eps,
+            t_max=scene.t_max,
+            max_steps=min(scene.max_steps, 200),  # Fewer steps needed for single primitive
+            camera_pos=cam_np,
+            camera_right=right_np,
+            camera_up=up_np,
+            camera_forward=forward_np,
+            light_dir=np.array(scene.light_dir, dtype=np.float32),
+            ambient=scene.ambient,
+            diffuse_strength=scene.diffuse_strength,
+            specular_strength=scene.specular_strength,
+            shininess=scene.shininess,
+            ink_color=ink_color,
+            torus_color=torus_color,
+            background_color=background_color,
+        )
+        
+        # Render (Pass A + Pass B)
+        print(f"[UV-GPU] Ray marching torus and sampling ink texture (Pass B)...")
+        img_rgba = gpu_renderer.render()
+        
+        # Convert RGBA to RGB for output
+        img_rgb = img_rgba[:, :, :3]
+        
+        # Cleanup GPU resources
+        try:
+            gpu_renderer.cleanup()
+        except Exception as cleanup_err:
+            print(f"[warning] GPU cleanup failed after successful render: {cleanup_err}")
+        
+    except Exception as e:
+        print(f"[error] UV GPU rendering failed: {e}")
+        import traceback
+        traceback.print_exc()
+        print("[fallback] Using CPU renderer instead")
+        if gpu_renderer:
+            try:
+                gpu_renderer.cleanup()
+            except Exception as cleanup_err:
+                print(f"[warning] GPU cleanup failed during fallback: {cleanup_err}")
+        render_cpu(scene, steps, out_path)
+        return
+    
+    # Save output
+    img_rgb = np.clip(img_rgb, 0.0, 1.0)
+    plt.imsave(png_path, img_rgb)
+    print(f"[saved] {png_path}")
+    
+    # Save scene metadata as JSON
+    metadata = {
+        "steps": steps,
+        "scene": asdict(scene),
+        "renderer": "UV-GPU (OpenGL two-pass UV-texture-based ray marching)",
+        "uv_texture_size": gpu_renderer.uv_texture_size,
+    }
+    with open(json_path, "w") as f:
+        json.dump(metadata, f, indent=2)
+    print(f"[saved] {json_path}")
+
+
 def parse_args():
     ap = argparse.ArgumentParser()
     ap.add_argument("--steps", type=int, nargs="*", default=[], help="List of step sizes (e.g., --steps 1 13 21). If omitted, only dots are rendered.")
@@ -1137,6 +1350,7 @@ def parse_args():
     
     ap.add_argument("--gpu", action="store_true", help="Use OpenGL GPU acceleration (ray marching with compute shaders)")
     ap.add_argument("--sdf", action="store_true", help="Use SDF-based GPU rendering (true capsule lines on torus interior, not sampled spheres)")
+    ap.add_argument("--uv", action="store_true", help="Use UV-texture-based GPU rendering (two-pass: build ink SDF texture, then ray march torus). Scales to thousands of nodes/edges efficiently.")
     ap.add_argument("--smooth", action="store_true", help="Enable smooth blending between spheres (GPU mode only, may be slow with many spheres)")
     ap.add_argument("--smooth_k", type=float, default=0.3, help="Smoothing factor for smooth minimum (default: 0.3, higher = more blending)")
 
@@ -1169,7 +1383,14 @@ if __name__ == "__main__":
     )
 
     # Choose renderer based on flags
-    if args.sdf:
+    if args.uv:
+        print("[mode] UV-GPU rendering (OpenGL two-pass UV-texture-based)")
+        render_uv_gpu(
+            scene=scene,
+            steps=args.steps,
+            out_path=args.out,
+        )
+    elif args.sdf:
         print("[mode] SDF-GPU rendering (OpenGL with SDF primitives)")
         render_sdf_gpu(
             scene=scene,
