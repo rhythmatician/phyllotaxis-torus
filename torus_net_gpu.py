@@ -487,14 +487,14 @@ def render_cpu(scene: Scene, steps: list[int], out_path: str):
     print(f"[device] {device}")
 
     # Organize outputs by file type
-    out_path = Path(out_path)
+    out_path_p = Path(out_path)
     png_dir = Path("png")
     json_dir = Path("json")
     png_dir.mkdir(exist_ok=True)
     json_dir.mkdir(exist_ok=True)
 
-    png_path = png_dir / out_path.name
-    json_path = json_dir / out_path.with_suffix(".json").name
+    png_path = png_dir / out_path_p.name
+    json_path = json_dir / out_path_p.with_suffix(".json").name
 
     cam_np, right_np, up_np, forward_np = build_camera(scene)
 
@@ -541,7 +541,9 @@ def render_cpu(scene: Scene, steps: list[int], out_path: str):
             scene.dot_size_max,
         )
     else:
-        dot_radii = scene.dot_radius_px  # Uniform radius
+        dot_radii = torch.full(
+            (scene.N,), scene.dot_radius_px, device=device, dtype=torch.float32
+        )  # Uniform radius
 
     # Edges from step sizes
     edges = []
@@ -598,7 +600,12 @@ def render_cpu(scene: Scene, steps: list[int], out_path: str):
         # Broadcast to all samples along each edge [E,S] → [E*S]
         line_radii = inverted_radii[:, None].expand(-1, samples).reshape(-1)
     else:
-        line_radii = scene.line_radius_px  # Uniform radius
+        line_radii = torch.full(
+            (samples * len(edges),),
+            scene.line_radius_px,
+            device=device,
+            dtype=torch.float32,
+        )  # Uniform radius
 
     # Render lines first (alpha blend, light shading, with dynamic radii)
     sphere_depth = splat_spheres(
@@ -694,14 +701,14 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         return
 
     # Organize outputs by file type
-    out_path = Path(out_path)
+    out_path_p = Path(out_path)
     png_dir = Path("png")
     json_dir = Path("json")
     png_dir.mkdir(exist_ok=True)
     json_dir.mkdir(exist_ok=True)
 
-    png_path = png_dir / out_path.name
-    json_path = json_dir / out_path.with_suffix(".json").name
+    png_path = png_dir / out_path_p.name
+    json_path = json_dir / out_path_p.with_suffix(".json").name
 
     # Build camera
     cam_np, right_np, up_np, forward_np = build_camera(scene)
@@ -782,7 +789,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     # Calculate world_scale for edges using a typical distance
     # For edges, we use the mean distance of the edge endpoints
     cam_origin = np.array([0.0, 0.0, 0.0])  # Torus is centered at origin
-    cam_to_center = np.linalg.norm(cam_np - cam_origin)
+    cam_to_center = float(np.linalg.norm(cam_np - cam_origin))
     typical_distance = (
         max(1.0, scene.r_inner - cam_to_center)
         if cam_to_center < scene.r_inner
@@ -835,7 +842,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
             torus_R=scene.R,
             torus_r=scene.r_inner,
             shell_thickness=shell_thickness,
-            edge_radius=edge_radius,
+            edge_radius=float(edge_radius),
             smooth_k=smooth_k,
             hit_eps=adjusted_hit_eps,  # Use adjusted hit_eps for small spheres
             t_max=scene.t_max,
@@ -938,14 +945,14 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
         return
 
     # Organize outputs by file type
-    out_path = Path(out_path)
+    out_path_p = Path(out_path)
     png_dir = Path("png")
     json_dir = Path("json")
     png_dir.mkdir(exist_ok=True)
     json_dir.mkdir(exist_ok=True)
 
-    png_path = png_dir / out_path.name
-    json_path = json_dir / out_path.with_suffix(".json").name
+    png_path = png_dir / out_path_p.name
+    json_path = json_dir / out_path_p.with_suffix(".json").name
 
     # Build camera
     cam_np, right_np, up_np, forward_np = build_camera(scene)
@@ -1012,7 +1019,7 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
     node_radii_uv = node_radii_world / scene.R  # [N]
 
     # Similarly for edges
-    cam_to_center = np.linalg.norm(cam_np)
+    cam_to_center = float(np.linalg.norm(cam_np))
     typical_distance = max(1.0, cam_to_center)
     world_scale = (typical_distance * aspect * 2.0) / (scene.f * (scene.W - 1))
     edge_radius_world = scene.line_radius_px * world_scale * 0.5

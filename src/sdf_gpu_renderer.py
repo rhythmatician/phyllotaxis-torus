@@ -55,10 +55,10 @@ class SDFGPURenderer:
     def _get_gpu_info(self) -> dict:
         """Get GPU information from OpenGL context."""
         return {
-            "vendor": self.ctx.info.get("GL_VENDOR", "Unknown"),  # type: ignore
-            "renderer": self.ctx.info.get("GL_RENDERER", "Unknown"),  # type: ignore
-            "version": self.ctx.info.get("GL_VERSION", "Unknown"),  # type: ignore
-            "glsl_version": self.ctx.info.get("GL_SHADING_LANGUAGE_VERSION", "Unknown"),  # type: ignore
+            "vendor": self.ctx.info.get("GL_VENDOR", "Unknown"),
+            "renderer": self.ctx.info.get("GL_RENDERER", "Unknown"),
+            "version": self.ctx.info.get("GL_VERSION", "Unknown"),
+            "glsl_version": self.ctx.info.get("GL_SHADING_LANGUAGE_VERSION", "Unknown"),
         }
 
     def _compile_shader(self) -> moderngl.ComputeShader:
