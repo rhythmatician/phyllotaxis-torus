@@ -33,6 +33,7 @@ smooth_min_*.*
 debug_*.py
 analyze_*.py
 find_*.py
+check_*.py
 diagnostic*.py
 tests/compare_*.py
 tests/visualize_*.py
