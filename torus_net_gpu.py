@@ -993,8 +993,13 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     V = node_positions_np - cam_np[np.newaxis, :]  # [N, 3]
     z_cam = np.dot(V, forward_np)  # [N] - distance along forward direction
     
+    # Clamp z_cam to positive values to avoid negative/zero radii for nodes behind camera
+    # Use a minimum distance that ensures reasonable sphere sizes
+    min_z_cam = max(0.1, scene.R * 0.5)  # Minimum distance = half torus major radius
+    z_cam_clamped = np.maximum(z_cam, min_z_cam)
+    
     # Apply CPU renderer's formula per node: r_world = radius_px * z_cam * aspect * 2.0 / (f * (W - 1))
-    node_radii = (scene.dot_radius_px * z_cam * aspect * 2.0) / (scene.f * (scene.W - 1))  # [N]
+    node_radii = (scene.dot_radius_px * z_cam_clamped * aspect * 2.0) / (scene.f * (scene.W - 1))  # [N]
     
     # Calculate world_scale for edges using a typical distance
     # For edges, we use the mean distance of the edge endpoints
@@ -1018,8 +1023,18 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     
     # Adjust hit_eps to ensure we can detect the smallest spheres
     # The ray marcher needs hit_eps < smallest_radius, otherwise it will step over small spheres
+    # However, hit_eps must not be too small or ray marching becomes unstable
     min_node_radius = np.min(node_radii)
-    adjusted_hit_eps = min(scene.hit_eps, min_node_radius * 0.5)  # Use half the smallest radius
+    min_allowed_hit_eps = 1e-5  # Minimum hit_eps to prevent numerical instability
+    max_allowed_hit_eps = scene.hit_eps  # Don't exceed scene's default
+    
+    # Target hit_eps: half the smallest radius, but clamped to reasonable range
+    target_hit_eps = min_node_radius * 0.5
+    adjusted_hit_eps = np.clip(target_hit_eps, min_allowed_hit_eps, max_allowed_hit_eps)
+    
+    # Debug output for troubleshooting
+    if adjusted_hit_eps < min_allowed_hit_eps * 10:
+        print(f"[SDF-GPU] Warning: Very small node radii detected (min={min_node_radius:.6f}), using minimum hit_eps={adjusted_hit_eps:.6f}")
     
     # Upload scene to GPU
     print(f"[SDF-GPU] Uploading {len(node_positions_np)} nodes and {len(edge_indices_np)} edges...")
