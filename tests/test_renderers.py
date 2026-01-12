@@ -9,6 +9,8 @@ Or just: python test_renderers.py
 import sys
 from pathlib import Path
 
+from count_colored_spheres import count_colored_spheres
+
 # Add parent directory to path to import torus_net_gpu
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -18,6 +20,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
+from scipy import ndimage
 
 from torus_net_gpu import (
     render_cpu,
@@ -52,8 +55,14 @@ def compare_images(img1: np.ndarray, img2: np.ndarray, threshold: float = 0.95):
     # Compute max absolute difference
     max_diff = np.max(np.abs(img1 - img2))
     
+    # Count colored spheres in all three images
+    spheres1 = count_colored_spheres(img1)
+    spheres2 = count_colored_spheres(img2)
+    spheres_diff = count_colored_spheres(img1 - img2)
+
     # Check if images are similar
     is_similar = ssim_score >= threshold
+    spheres_match = (spheres1["count"] == spheres2["count"]) and (spheres_diff["count"] == 0)
     
     return {
         "ssim": ssim_score,
@@ -61,6 +70,11 @@ def compare_images(img1: np.ndarray, img2: np.ndarray, threshold: float = 0.95):
         "max_diff": max_diff,
         "is_similar": is_similar,
         "threshold": threshold,
+        "spheres_count_1": spheres1["count"],
+        "spheres_count_2": spheres2["count"],
+        "spheres_match": spheres_match,
+        "region_sizes_1": spheres1["region_sizes"],
+        "region_sizes_2": spheres2["region_sizes"],
     }
 
 
@@ -163,7 +177,10 @@ def test_single_node():
     print(f"  MSE: {metrics['mse']:.6f}")
     print(f"  Max Diff: {metrics['max_diff']:.6f}")
     print(f"  Similar: {metrics['is_similar']}")
-    
+    print(f"  CPU Spheres: {metrics['spheres_count_1']}")
+    print(f"  GPU Spheres: {metrics['spheres_count_2']}")
+    print(f"  Spheres Match: {metrics['spheres_match']}")
+
     # Save comparison
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     axes[0].imshow(cpu_img)
@@ -216,6 +233,9 @@ def test_few_nodes():
     print(f"  MSE: {metrics['mse']:.6f}")
     print(f"  Max Diff: {metrics['max_diff']:.6f}")
     print(f"  Similar: {metrics['is_similar']}")
+    print(f"  CPU Spheres: {metrics['spheres_count_1']}")
+    print(f"  GPU Spheres: {metrics['spheres_count_2']}")
+    print(f"  Spheres Match: {metrics['spheres_match']}")
     
     # Save comparison
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
@@ -269,6 +289,12 @@ def test_medium_nodes():
     print(f"  MSE: {metrics['mse']:.6f}")
     print(f"  Max Diff: {metrics['max_diff']:.6f}")
     print(f"  Similar: {metrics['is_similar']}")
+    
+    # Count colored spheres
+    cpu_sphere_count = count_colored_spheres(cpu_img)
+    print(f"  CPU Spheres: {metrics['spheres_count_1']}")
+    print(f"  GPU Spheres: {metrics['spheres_count_2']}")
+    print(f"  Spheres Match: {metrics['spheres_match']}")
     
     # Save comparison
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
