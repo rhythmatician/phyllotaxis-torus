@@ -32,24 +32,21 @@ class SDFGPURenderer:
         self.height = height
 
         # Create OpenGL context (standalone for headless rendering)
-        try:
-            self.ctx = moderngl.create_standalone_context()
-        except Exception as e:
-            raise RuntimeError(f"Failed to create OpenGL context: {e}")
+        self.ctx: moderngl.Context = moderngl.create_standalone_context()
 
         # Get GPU info
         self.gpu_info = self._get_gpu_info()
 
         # Load and compile compute shader
-        self.program = self._compile_shader()
+        self.program: moderngl.ComputeShader = self._compile_shader()
 
         # Create buffers (will be populated later)
-        self.node_positions_buffer = None
-        self.node_colors_buffer = None
-        self.node_radii_buffer = None  # Per-node radii
-        self.edge_indices_buffer = None
-        self.edge_colors_buffer = None
-        self.output_buffer = None
+        self.node_positions_buffer: Optional[moderngl.Buffer] = None
+        self.node_colors_buffer: Optional[moderngl.Buffer] = None
+        self.node_radii_buffer: Optional[moderngl.Buffer] = None  # Per-node radii
+        self.edge_indices_buffer: Optional[moderngl.Buffer] = None
+        self.edge_colors_buffer: Optional[moderngl.Buffer] = None
+        self.output_buffer: Optional[moderngl.Buffer] = None
 
         # Current scene parameters
         self.num_nodes = 0
@@ -58,10 +55,10 @@ class SDFGPURenderer:
     def _get_gpu_info(self) -> dict:
         """Get GPU information from OpenGL context."""
         return {
-            "vendor": self.ctx.info.get("GL_VENDOR", "Unknown"),
-            "renderer": self.ctx.info.get("GL_RENDERER", "Unknown"),
-            "version": self.ctx.info.get("GL_VERSION", "Unknown"),
-            "glsl_version": self.ctx.info.get("GL_SHADING_LANGUAGE_VERSION", "Unknown"),
+            "vendor": self.ctx.info.get("GL_VENDOR", "Unknown"),  # type: ignore
+            "renderer": self.ctx.info.get("GL_RENDERER", "Unknown"),  # type: ignore
+            "version": self.ctx.info.get("GL_VERSION", "Unknown"),  # type: ignore
+            "glsl_version": self.ctx.info.get("GL_SHADING_LANGUAGE_VERSION", "Unknown"),  # type: ignore
         }
 
     def _compile_shader(self) -> moderngl.ComputeShader:
@@ -189,13 +186,24 @@ class SDFGPURenderer:
                 self.output_buffer = self.ctx.buffer(reserve=output_size)
         else:
             # Update existing buffers
+            assert self.node_positions_buffer is not None
+            assert self.node_colors_buffer is not None
+            assert self.node_radii_buffer is not None
+            assert self.edge_indices_buffer is not None
+            assert self.edge_colors_buffer is not None
             self.node_positions_buffer.write(node_positions.tobytes())
             self.node_colors_buffer.write(node_colors.tobytes())
             self.node_radii_buffer.write(node_radii.tobytes())
             self.edge_indices_buffer.write(edge_indices.tobytes())
             self.edge_colors_buffer.write(edge_colors.tobytes())
 
-        # Bind buffers to shader
+        # Bind buffers to shader (guaranteed to exist after recreate_buffers check)
+        assert self.node_positions_buffer is not None
+        assert self.node_colors_buffer is not None
+        assert self.node_radii_buffer is not None
+        assert self.edge_indices_buffer is not None
+        assert self.edge_colors_buffer is not None
+        assert self.output_buffer is not None
         self.node_positions_buffer.bind_to_storage_buffer(0)
         self.node_colors_buffer.bind_to_storage_buffer(1)
         self.node_radii_buffer.bind_to_storage_buffer(5)  # New binding for node radii
@@ -250,6 +258,7 @@ class SDFGPURenderer:
         self.program.run(groups_x, groups_y, 1)
 
         # Read back results
+        assert self.output_buffer is not None
         data = self.output_buffer.read()
 
         # Convert to numpy array and reshape
@@ -265,28 +274,28 @@ class SDFGPURenderer:
         """Release GPU resources."""
         if self.node_positions_buffer is not None:
             self.node_positions_buffer.release()
-            self.node_positions_buffer = None
+            del self.node_positions_buffer
         if self.node_colors_buffer is not None:
             self.node_colors_buffer.release()
-            self.node_colors_buffer = None
+            del self.node_colors_buffer
         if self.node_radii_buffer is not None:
             self.node_radii_buffer.release()
-            self.node_radii_buffer = None
+            del self.node_radii_buffer
         if self.edge_indices_buffer is not None:
             self.edge_indices_buffer.release()
-            self.edge_indices_buffer = None
+            del self.edge_indices_buffer
         if self.edge_colors_buffer is not None:
             self.edge_colors_buffer.release()
-            self.edge_colors_buffer = None
+            del self.edge_colors_buffer
         if self.output_buffer is not None:
             self.output_buffer.release()
-            self.output_buffer = None
+            del self.output_buffer
         if self.program is not None:
             self.program.release()
-            self.program = None
+            del self.program
         if self.ctx is not None:
             self.ctx.release()
-            self.ctx = None
+            del self.ctx
 
     def __del__(self):
         """Ensure cleanup on deletion."""

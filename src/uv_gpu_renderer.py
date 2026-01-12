@@ -35,7 +35,7 @@ class UVGPURenderer:
         self.width = width
         self.height = height
         self.uv_texture_size = uv_texture_size
-
+        self.ctx: moderngl.Context
         # Create OpenGL context (standalone for headless rendering)
         try:
             self.ctx = moderngl.create_standalone_context()
@@ -52,20 +52,20 @@ class UVGPURenderer:
         self.raymarch_program = self._compile_shader("raymarch_uv.comp")
 
         # Create seed textures for JFA (ping-pong buffers, R32I format for seed IDs)
-        self.seed_texture_a = self.ctx.texture(
+        self.seed_texture_a: moderngl.Texture = self.ctx.texture(
             (uv_texture_size, uv_texture_size), components=1, dtype="i4"
         )
         self.seed_texture_a.repeat_x = True
         self.seed_texture_a.repeat_y = True
 
-        self.seed_texture_b = self.ctx.texture(
+        self.seed_texture_b: moderngl.Texture = self.ctx.texture(
             (uv_texture_size, uv_texture_size), components=1, dtype="i4"
         )
         self.seed_texture_b.repeat_x = True
         self.seed_texture_b.repeat_y = True
 
         # Create UV ink SDF texture (R32F format for signed distance)
-        self.ink_sdf_texture = self.ctx.texture(
+        self.ink_sdf_texture: moderngl.Texture = self.ctx.texture(
             (uv_texture_size, uv_texture_size), components=1, dtype="f4"
         )
         # Set wrapping mode to REPEAT for toroidal topology (no seams at 0/1 boundary)
@@ -73,17 +73,16 @@ class UVGPURenderer:
         self.ink_sdf_texture.repeat_y = True
 
         # Create output image texture (RGBA32F)
-        self.output_texture = self.ctx.texture(
+        self.output_texture: moderngl.Texture = self.ctx.texture(
             (width, height), components=4, dtype="f4"
         )
 
         # Buffers (will be populated later)
-        self.node_uv_buffer = None
-        self.node_radii_buffer = None
-        self.edge_uv_buffer = None
-        self.edge_radii_buffer = None
-        self.output_buffer = None
-
+        self.node_uv_buffer: moderngl.Buffer
+        self.node_radii_buffer: moderngl.Buffer
+        self.edge_uv_buffer: moderngl.Buffer
+        self.edge_radii_buffer: moderngl.Buffer
+        self.output_buffer: moderngl.Buffer
         # Current scene parameters
         self.num_nodes = 0
         self.num_edges = 0
@@ -286,8 +285,8 @@ class UVGPURenderer:
         max_jump = self.uv_texture_size // 2
 
         # Ping-pong between texture A and B
-        read_texture = self.seed_texture_a
-        write_texture = self.seed_texture_b
+        read_texture: moderngl.Texture = self.seed_texture_a
+        write_texture: moderngl.Texture = self.seed_texture_b
 
         jump_step = max_jump
         while jump_step >= 1:
@@ -367,52 +366,52 @@ class UVGPURenderer:
         # Release buffers
         if self.node_uv_buffer is not None:
             self.node_uv_buffer.release()
-            self.node_uv_buffer = None
+            del self.node_uv_buffer
 
         if self.node_radii_buffer is not None:
             self.node_radii_buffer.release()
-            self.node_radii_buffer = None
+            del self.node_radii_buffer
 
         if self.edge_uv_buffer is not None:
             self.edge_uv_buffer.release()
-            self.edge_uv_buffer = None
+            del self.edge_uv_buffer
 
         if self.edge_radii_buffer is not None:
             self.edge_radii_buffer.release()
-            self.edge_radii_buffer = None
+            del self.edge_radii_buffer
 
         if self.output_buffer is not None:
             self.output_buffer.release()
-            self.output_buffer = None
+            del self.output_buffer
 
         # Release textures (even if ctx fails)
         try:
             if self.seed_texture_a is not None:
                 self.seed_texture_a.release()
-                self.seed_texture_a = None
+                del self.seed_texture_a
         except Exception:
-            self.seed_texture_a = None
+            del self.seed_texture_a
 
         try:
             if self.seed_texture_b is not None:
                 self.seed_texture_b.release()
-                self.seed_texture_b = None
+                del self.seed_texture_b
         except Exception:
-            self.seed_texture_b = None
+            del self.seed_texture_b
 
         try:
             if self.ink_sdf_texture is not None:
                 self.ink_sdf_texture.release()
-                self.ink_sdf_texture = None
+                del self.ink_sdf_texture
         except Exception:
-            self.ink_sdf_texture = None
+            del self.ink_sdf_texture
 
         try:
             if self.output_texture is not None:
                 self.output_texture.release()
-                self.output_texture = None
+                del self.output_texture
         except Exception:
-            self.output_texture = None
+            del self.output_texture
 
         # Release context
         if self.ctx is not None:
@@ -420,7 +419,7 @@ class UVGPURenderer:
                 self.ctx.release()
             except Exception:
                 pass
-            self.ctx = None
+            del self.ctx
 
 
 def test_uv_gpu_availability() -> Tuple[bool, Optional[str]]:

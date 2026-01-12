@@ -5,7 +5,7 @@ Supports Intel HD Graphics 630 and other OpenGL 4.3+ compatible GPUs.
 
 import numpy as np
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 import moderngl
 
 
@@ -29,33 +29,37 @@ class GPURenderer:
         self.height = height
 
         # Create OpenGL context (standalone for headless rendering)
-        try:
-            self.ctx = moderngl.create_standalone_context()
-        except Exception as e:
-            raise RuntimeError(f"Failed to create OpenGL context: {e}")
-
+        self.ctx: moderngl.Context = moderngl.create_standalone_context()
         # Get GPU info
         self.gpu_info = self._get_gpu_info()
 
         # Load and compile compute shader
-        self.program = self._compile_shader()
+        self.program: moderngl.ComputeShader = self._compile_shader()
 
         # Create buffers (will be populated later)
-        self.sphere_centers_buffer = None
-        self.sphere_colors_buffer = None
-        self.sphere_radii_buffer = None
-        self.output_buffer = None
+        self.sphere_centers_buffer: moderngl.Buffer
+        self.sphere_colors_buffer: moderngl.Buffer
+        self.sphere_radii_buffer: moderngl.Buffer
+        self.output_buffer: moderngl.Buffer
 
         # Current scene parameters
         self.num_spheres = 0
 
-    def _get_gpu_info(self) -> dict:
+    def _get_gpu_info(self) -> Dict[str, Any]:
         """Get GPU information from OpenGL context."""
         return {
-            "vendor": self.ctx.info.get("GL_VENDOR", "Unknown"),
-            "renderer": self.ctx.info.get("GL_RENDERER", "Unknown"),
-            "version": self.ctx.info.get("GL_VERSION", "Unknown"),
-            "glsl_version": self.ctx.info.get("GL_SHADING_LANGUAGE_VERSION", "Unknown"),
+            "vendor": self.ctx.info.get(  # pyright: ignore[reportOptionalMemberAccess]
+                "GL_VENDOR", "Unknown"
+            ),
+            "renderer": self.ctx.info.get(  # pyright: ignore[reportOptionalMemberAccess]
+                "GL_RENDERER", "Unknown"
+            ),
+            "version": self.ctx.info.get(  # pyright: ignore[reportOptionalMemberAccess]
+                "GL_VERSION", "Unknown"
+            ),
+            "glsl_version": self.ctx.info.get(  # pyright: ignore[reportOptionalMemberAccess]
+                "GL_SHADING_LANGUAGE_VERSION", "Unknown"
+            ),
         }
 
     def _compile_shader(self) -> moderngl.ComputeShader:
@@ -231,22 +235,22 @@ class GPURenderer:
         """Release GPU resources."""
         if self.sphere_centers_buffer is not None:
             self.sphere_centers_buffer.release()
-            self.sphere_centers_buffer = None
+            del self.sphere_centers_buffer
         if self.sphere_colors_buffer is not None:
             self.sphere_colors_buffer.release()
-            self.sphere_colors_buffer = None
+            del self.sphere_colors_buffer
         if self.sphere_radii_buffer is not None:
             self.sphere_radii_buffer.release()
-            self.sphere_radii_buffer = None
+            del self.sphere_radii_buffer
         if self.output_buffer is not None:
             self.output_buffer.release()
-            self.output_buffer = None
+            del self.output_buffer
         if self.program is not None:
             self.program.release()
-            self.program = None
+            del self.program
         if self.ctx is not None:
             self.ctx.release()
-            self.ctx = None
+            del self.ctx
 
     def __del__(self):
         """Ensure cleanup on deletion."""
@@ -276,5 +280,5 @@ def test_gpu_availability() -> Tuple[bool, Optional[dict]]:
         }
         ctx.release()
         return True, gpu_info
-    except Exception as e:
+    except Exception:
         return False, None
