@@ -763,32 +763,34 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         edge_indices_np = np.empty((0, 2), dtype=np.int32)
         edge_colors_rgba = np.empty((0, 4), dtype=np.float32)
 
-    # Calculate SDF parameters
-    # Convert pixel radius to world-space radius using the same formula as the CPU renderer:
-    # r_world = (radius_px * z_cam * aspect * 2.0) / (scene.f * (W - 1))
-    #
-    # To match the CPU renderer exactly, we calculate per-node radii based on each node's
-    # distance from the camera along the camera's forward direction (z_cam), not Euclidean distance.
+    # Calculate SDF parameters (DRY with CPU renderer)
+    # Use the exact CPU projection logic to determine visibility and z_cam,
+    # then convert the requested pixel radius to world-space per node.
     aspect = scene.W / scene.H
 
-    # Calculate per-node z_cam (distance along camera forward direction)
-    # This matches the CPU renderer's project_points function: z_cam = V · forward
-    V = node_positions_np - cam_np[np.newaxis, :]  # [N, 3]
-    z_cam = np.dot(V, forward_np)  # [N] - distance along camera forward direction
+    # Reuse CPU projection: get valid mask and z_cam
+    device = torch.device("cpu")
+    C_t = torch.tensor(cam_np, device=device, dtype=torch.float32)
+    right_t = torch.tensor(right_np, device=device, dtype=torch.float32)
+    up_t = torch.tensor(up_np, device=device, dtype=torch.float32)
+    fwd_t = torch.tensor(forward_np, device=device, dtype=torch.float32)
+    P_t = torch.tensor(node_positions_np, device=device, dtype=torch.float32)
+    valid_t, z_cam_t, px_t, py_t = project_points(
+        P_t, C_t, right_t, up_t, fwd_t, scene.f, scene.W, scene.H
+    )
 
-    # Filter out nodes behind camera (like CPU renderer does with z_cam > 1e-6)
-    # The CPU also filters nodes whose projection falls outside screen bounds,
-    # but we don't need to do that here since the ray marcher naturally won't hit them
-    min_z_cam_threshold = 1e-6
-    valid_nodes = z_cam > min_z_cam_threshold
+    valid_nodes = valid_t.cpu().numpy().astype(bool)
+    z_cam = z_cam_t.cpu().numpy()
 
-    # Apply CPU renderer's formula per node: r_world = radius_px * z_cam * aspect * 2.0 / (f * (W - 1))
-    node_radii = (scene.dot_radius_px * z_cam * aspect * 2.0) / (
+    # Filter arrays to only valid nodes (like CPU splat)
+    node_positions_np = node_positions_np[valid_nodes]
+    node_colors_rgba = node_colors_rgba[valid_nodes]
+
+    # Handle both uniform and per-point radii (scene.dot_radius_dynamic=False in tests)
+    # r_world ≈ r_px * z_cam * aspect * 2 / (f * (W-1))
+    node_radii = (scene.dot_radius_px * z_cam[valid_nodes] * aspect * 2.0) / (
         scene.f * (scene.W - 1)
-    )  # [N]
-
-    # Zero out radii for invalid nodes so they don't block rays
-    node_radii = np.where(valid_nodes, node_radii, 1e-8)
+    )
 
     # Calculate world_scale for edges using a typical distance
     # For edges, we use the mean distance of the edge endpoints
@@ -835,6 +837,18 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     print(
         f"[SDF-GPU] Uploading {len(node_positions_np)} nodes and {len(edge_indices_np)} edges..."
     )
+    print(f"[SDF-GPU] Camera: pos={cam_np}, forward={forward_np}")
+    print(f"[SDF-GPU] First 3 nodes: {node_positions_np[:3]}")
+    print(f"[SDF-GPU] First 3 radii: {node_radii[:3]}")
+
+    # Build per-pixel ray directions to ensure parity with CPU
+    D_cpu = build_rays(
+        scene, device=torch.device("cpu"), right=right_t, up=up_t, forward=fwd_t
+    )
+    ray_dirs_np3 = D_cpu.numpy().reshape(-1, 3).astype(np.float32)
+    # Pad to vec4 for std430 16-byte alignment
+    zeros = np.zeros((ray_dirs_np3.shape[0], 1), dtype=np.float32)
+    ray_dirs_np = np.concatenate([ray_dirs_np3, zeros], axis=1)
 
     try:
         gpu_renderer.upload_scene(
@@ -861,6 +875,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
             diffuse_strength=scene.diffuse_strength,
             specular_strength=scene.specular_strength,
             shininess=scene.shininess,
+            ray_dirs=ray_dirs_np,
         )
 
         # Render

@@ -22,6 +22,7 @@ uniform vec3 camera_forward;
 uniform float focal_length;
 uniform int width;
 uniform int height;
+uniform int use_ray_buffer;
 uniform vec3 light_dir;
 uniform float ambient;
 uniform float diffuse_strength;
@@ -51,6 +52,11 @@ layout(std430, binding = 3) buffer EdgeColors {
 
 layout(std430, binding = 4) buffer OutputImage {
     vec4 output_pixels[];
+};
+
+// Optional ray directions buffer (precomputed on CPU)
+layout(std430, binding = 6) buffer RayDirs {
+    vec4 ray_dirs[];
 };
 
 // ============================================================================
@@ -327,26 +333,32 @@ void main() {
     }
 
     // Compute ray direction for this pixel
-    float aspect = float(width) / float(height);
+    vec3 ray_dir;
+    if (use_ray_buffer == 1) {
+        int pix_index = pixel.y * width + pixel.x;
+        ray_dir = normalize(ray_dirs[pix_index].xyz);
+    } else {
+        float aspect = float(width) / float(height);
 
-    // Normalized device coordinates [-1, 1] x [-1, 1]
-    float x_ndc = ((float(pixel.x) + 0.5) / float(width)) * 2.0 - 1.0;
-    float y_ndc = 1.0 - ((float(pixel.y) + 0.5) / float(height)) * 2.0;
+        // Normalized device coordinates [-1, 1] x [-1, 1]
+        float x_ndc = ((float(pixel.x) + 0.5) / float(width)) * 2.0 - 1.0;
+        float y_ndc = 1.0 - ((float(pixel.y) + 0.5) / float(height)) * 2.0;
 
-    // Apply aspect ratio
-    x_ndc *= aspect;
+        // Apply aspect ratio
+        x_ndc *= aspect;
 
-    // Compute ray direction in camera space
-    float dx = x_ndc / focal_length;
-    float dy = y_ndc / focal_length;
-    float dz = 1.0;
+        // Compute ray direction in camera space
+        float dx = x_ndc / focal_length;
+        float dy = y_ndc / focal_length;
+        float dz = 1.0;
 
-    // Transform to world space
-    vec3 ray_dir = normalize(
-        dx * camera_right +
-        dy * camera_up +
-        dz * camera_forward
-    );
+        // Transform to world space
+        ray_dir = normalize(
+            dx * camera_right +
+            dy * camera_up +
+            dz * camera_forward
+        );
+    }
 
     vec3 ray_origin = camera_pos;
 
@@ -404,7 +416,27 @@ void main() {
         vec4 base_color = get_hit_color(hit_type, hit_idx);
 
         // Compute normal at hit point
-        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0);
+        vec3 normal;
+        if (hit_type == 0) {
+            // Refine sphere hit using exact ray-sphere intersection
+            vec3 center = node_positions[hit_idx];
+            float radius = node_radii[hit_idx];
+            vec3 L = center - camera_pos;
+            float b = dot(ray_dir, L);
+            float c = dot(L, L) - radius * radius;
+            float disc = b * b - c;
+            if (disc > 0.0) {
+                float t_s = b - sqrt(disc);
+                if (t_s > 0.0 && t_s < t_max) {
+                    hit_pos = camera_pos + t_s * ray_dir;
+                }
+            }
+            // Analytical normal for sphere: radial from center
+            normal = normalize(hit_pos - center);
+        } else {
+            // Fallback to gradient-based normal for edges
+            normal = estimate_normal(hit_pos, hit_eps * 2.0);
+        }
 
         // Compute view direction (from hit point toward camera)
         vec3 view_dir = normalize(camera_pos - hit_pos);

@@ -47,6 +47,7 @@ class SDFGPURenderer:
         self.edge_indices_buffer: Optional[moderngl.Buffer] = None
         self.edge_colors_buffer: Optional[moderngl.Buffer] = None
         self.output_buffer: Optional[moderngl.Buffer] = None
+        self.ray_dirs_buffer: Optional[moderngl.Buffer] = None
 
         # Current scene parameters
         self.num_nodes = 0
@@ -103,6 +104,7 @@ class SDFGPURenderer:
         diffuse_strength: float,
         specular_strength: float,
         shininess: float,
+        ray_dirs: Optional[np.ndarray] = None,  # [H*W, 3] flattened (y-major)
     ):
         """
         Upload scene data and parameters to GPU.
@@ -136,6 +138,7 @@ class SDFGPURenderer:
         node_rad_nbytes = node_radii.nbytes
         edge_idx_nbytes = edge_indices.nbytes
         edge_col_nbytes = edge_colors.nbytes
+        # Optional ray directions buffer size is derived when provided
 
         # Create or update buffers
         recreate_buffers = (
@@ -163,6 +166,8 @@ class SDFGPURenderer:
                 self.edge_indices_buffer.release()
             if self.edge_colors_buffer is not None:
                 self.edge_colors_buffer.release()
+            if self.ray_dirs_buffer is not None:
+                self.ray_dirs_buffer.release()
 
             # Create new buffers
             self.node_positions_buffer = self.ctx.buffer(node_positions.tobytes())
@@ -184,6 +189,15 @@ class SDFGPURenderer:
                 # Create output buffer
                 output_size = self.width * self.height * 4 * 4  # RGBA float32
                 self.output_buffer = self.ctx.buffer(reserve=output_size)
+
+            # Ray directions buffer (optional) — use vec4 stride for std430 alignment
+            if ray_dirs is not None:
+                ray_dirs = np.asarray(ray_dirs, dtype=np.float32).reshape(-1, 4)
+                self.ray_dirs_buffer = self.ctx.buffer(ray_dirs.tobytes())
+            else:
+                # Minimal dummy so binding is valid even when not used
+                dummy_ray = np.array([[0.0, 0.0, 1.0, 0.0]], dtype=np.float32)
+                self.ray_dirs_buffer = self.ctx.buffer(dummy_ray.tobytes())
         else:
             # Update existing buffers
             assert self.node_positions_buffer is not None
@@ -196,6 +210,9 @@ class SDFGPURenderer:
             self.node_radii_buffer.write(node_radii.tobytes())
             self.edge_indices_buffer.write(edge_indices.tobytes())
             self.edge_colors_buffer.write(edge_colors.tobytes())
+            if ray_dirs is not None and self.ray_dirs_buffer is not None:
+                ray_dirs = np.asarray(ray_dirs, dtype=np.float32).reshape(-1, 4)
+                self.ray_dirs_buffer.write(ray_dirs.tobytes())
 
         # Bind buffers to shader (guaranteed to exist after recreate_buffers check)
         assert self.node_positions_buffer is not None
@@ -204,12 +221,14 @@ class SDFGPURenderer:
         assert self.edge_indices_buffer is not None
         assert self.edge_colors_buffer is not None
         assert self.output_buffer is not None
+        assert self.ray_dirs_buffer is not None
         self.node_positions_buffer.bind_to_storage_buffer(0)
         self.node_colors_buffer.bind_to_storage_buffer(1)
         self.node_radii_buffer.bind_to_storage_buffer(5)  # New binding for node radii
         self.edge_indices_buffer.bind_to_storage_buffer(2)
         self.edge_colors_buffer.bind_to_storage_buffer(3)
         self.output_buffer.bind_to_storage_buffer(4)
+        self.ray_dirs_buffer.bind_to_storage_buffer(6)
 
         # Set uniforms
         self.program["numNodes"].value = int(self.num_nodes)
@@ -232,6 +251,7 @@ class SDFGPURenderer:
 
         self.program["width"].value = int(self.width)
         self.program["height"].value = int(self.height)
+        self.program["use_ray_buffer"].value = int(1 if ray_dirs is not None else 0)
 
         self.program["light_dir"].value = tuple(light_dir.astype(np.float32))
         self.program["ambient"].value = float(ambient)
@@ -290,6 +310,9 @@ class SDFGPURenderer:
         if self.output_buffer is not None:
             self.output_buffer.release()
             del self.output_buffer
+        if self.ray_dirs_buffer is not None:
+            self.ray_dirs_buffer.release()
+            del self.ray_dirs_buffer
         if self.program is not None:
             self.program.release()
             del self.program
