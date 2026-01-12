@@ -145,8 +145,6 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
                     dot_radius_px=10,
                     dot_radius_dynamic=False,
                 ),
-                "render_order": ("cpu", "gpu"),
-                "check_gpu_single_color": False,
                 "comparison_png": "test1_comparison.png",
             },
             id="single_node",
@@ -161,11 +159,6 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
                     dot_radius_px=8,
                     dot_radius_dynamic=False,
                 ),
-                "render_order": (
-                    "gpu",
-                    "cpu",
-                ),  # matches current order :contentReference[oaicite:7]{index=7}
-                "check_gpu_single_color": True,  # matches current guard :contentReference[oaicite:8]{index=8}
                 "comparison_png": "test2_comparison.png",
             },
             id="few_nodes",
@@ -180,8 +173,6 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
                     dot_radius_px=5,
                     dot_radius_dynamic=False,
                 ),
-                "render_order": ("cpu", "gpu"),
-                "check_gpu_single_color": False,
                 "comparison_png": "test3_comparison.png",
             },
             id="medium_nodes",
@@ -200,24 +191,19 @@ def test_nodes_cpu_vs_gpu(case):
     )
     steps = []  # No edges yet (matches all three tests)
 
-    # Render in the per-case order (few_nodes does GPU first)
-    paths = {}
-    imgs = {}
+    # Render with GPU and CPU renderers
+    gpu_path = render_test_scene(scene, steps, "gpu", case["case_id"])
+    gpu_img = load_rendered_image(gpu_path)
 
-    for renderer in case["render_order"]:
-        paths[renderer] = render_test_scene(scene, steps, renderer, case["case_id"])
-        imgs[renderer] = load_rendered_image(paths[renderer])
+    # Preserve the "GPU single-color output" failure check for the N=13 case
 
-        # Preserve the "GPU single-color output" failure check for the N=13 case
-        if renderer == "gpu" and case["check_gpu_single_color"]:
-            gpu_img = imgs["gpu"]
-            if np.allclose(gpu_img, gpu_img[0, 0, :], atol=1e-3):
-                raise AssertionError(
-                    "GPU renderer output is a single color image! Check shader compilation errors."
-                )
-
-    cpu_img = imgs["cpu"]
-    gpu_img = imgs["gpu"]
+    gpu_img = gpu_img
+    if np.allclose(gpu_img, gpu_img[0, 0, :], atol=1e-3):
+        raise AssertionError(
+            "GPU renderer output is a single color image! Check shader compilation errors."
+        )
+    cpu_path = render_test_scene(scene, steps, "cpu", case["case_id"])
+    cpu_img = load_rendered_image(cpu_path)
 
     metrics = compare_images(cpu_img, gpu_img)
 
