@@ -25,3 +25,10 @@ smooth_min_*.*
 
 # VS Code settings
 .vscode/settings.json
+
+# Copilot's temporary test files
+debug_*.py
+analyze_*.py
+
+# Text files
+*.txt
