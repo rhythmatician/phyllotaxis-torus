@@ -21,7 +21,6 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from torus_net_gpu import (  # noqa: E402
     render_cpu,
-    render_gpu,
     render_sdf_gpu,
     Scene,
 )
@@ -106,9 +105,7 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
 
     if renderer == "cpu":
         render_cpu(scene, steps, str(output_path))
-    elif renderer == "gpu":
-        render_gpu(scene, steps, str(output_path))
-    elif renderer == "sdf-gpu":
+    elif renderer in ["gpu", "sdf-gpu"]:
         render_sdf_gpu(scene, steps, str(output_path))
     else:
         raise ValueError(f"Unknown renderer: {renderer}")
@@ -124,13 +121,9 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
                 metadata = json.load(f)
                 actual_renderer = metadata.get("renderer", "unknown")
                 # CPU renderer doesn't set a "renderer" field, or sets it differently
-                if renderer == "sdf-gpu" and "SDF-GPU" not in actual_renderer:
+                if "SDF-GPU" not in actual_renderer:
                     raise AssertionError(
                         "SDF-GPU renderer fell back to CPU! Check shader compilation errors."
-                    )
-                elif renderer == "gpu" and "GPU" not in actual_renderer:
-                    raise AssertionError(
-                        "GPU renderer fell back to CPU! Check OpenGL initialization."
                     )
 
     return png_path
