@@ -29,6 +29,7 @@ smooth_min_*.*
 # Copilot's temporary test files
 debug_*.py
 analyze_*.py
+find_*.py
 
 # Text files
 *.txt
