@@ -2,3 +2,6 @@ numpy
 torch
 matplotlib
 moderngl
+pytest
+scikit-image
+scipy
