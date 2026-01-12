@@ -1,5 +1,6 @@
 # Byte-compiled / optimized / DLL files
 *.pyc
+tests/__pycache__/*
 
 # Temporary files
 temp.*
