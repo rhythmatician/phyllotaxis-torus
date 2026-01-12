@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
-from src.types import Scene
+from src.scene_types import Scene
 from src.shade import phong_shade
 
 
