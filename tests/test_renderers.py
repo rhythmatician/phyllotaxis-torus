@@ -193,6 +193,12 @@ def test_single_node():
     plt.savefig(TEST_OUTPUT_DIR / "test1_comparison.png", dpi=100)
     plt.close()
 
+    assert (
+        metrics["spheres_count_1"] == metrics["spheres_count_2"]
+    ), "CPU and GPU sphere counts differ"
+    assert (
+        metrics["spheres_count_diff"] == 0
+    ), "Colored spheres differ between CPU and GPU renders"
     assert metrics["is_similar"], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
 
 
@@ -252,6 +258,12 @@ def test_few_nodes():
     plt.savefig(TEST_OUTPUT_DIR / "test2_comparison.png", dpi=100)
     plt.close()
 
+    assert (
+        metrics["spheres_count_1"] == metrics["spheres_count_2"]
+    ), "CPU and GPU sphere counts differ"
+    assert (
+        metrics["spheres_count_diff"] == 0
+    ), "Colored spheres differ between CPU and GPU renders"
     assert metrics["is_similar"], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
 
 
@@ -311,6 +323,12 @@ def test_medium_nodes():
     plt.savefig(TEST_OUTPUT_DIR / "test3_comparison.png", dpi=100)
     plt.close()
 
+    assert (
+        metrics["spheres_count_1"] == metrics["spheres_count_2"]
+    ), "CPU and GPU sphere counts differ"
+    assert (
+        metrics["spheres_count_diff"] == 0
+    ), "Colored spheres differ between CPU and GPU renders"
     assert metrics["is_similar"], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
 
 
