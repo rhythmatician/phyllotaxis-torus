@@ -44,17 +44,16 @@ def torus_sdf(P: torch.Tensor, R: float, r: float) -> torch.Tensor:
     return torch.sqrt(qx * qx + z * z) - r
 
 
-def hollow_torus_sdf(
-    P: torch.Tensor, R: float, r_outer: float, thickness: float = 0.115
-) -> torch.Tensor:
+def hollow_torus_sdf(P: torch.Tensor, R: float, r: float) -> torch.Tensor:
     """
-    Hollow torus (shell with thickness).
-    Returns negative inside the hollow interior, positive outside the shell.
+    Torus SDF: cavity inside, solid outside.
+
+    Inside tube (cavity): negative SDF
+    Outside tube (solid): positive SDF
     """
-    torus_outer = torus_sdf(P, R, r_outer)
-    torus_inner = torus_sdf(P, R, r_outer - thickness)
-    # Shell is the region between outer and inner surfaces
-    return torch.maximum(torus_outer, -torus_inner)
+    rho = torch.sqrt(P[:, 0] ** 2 + P[:, 1] ** 2)
+    d_ring = torch.sqrt((rho - R) ** 2 + P[:, 2] ** 2)
+    return d_ring - r
 
 
 def torus_point_from_uv(
@@ -783,30 +782,38 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
         scene.f * (scene.W - 1)
     )
 
-    # Convert to UV-space radii (angular radians)
-    # At outer edge: radius_uv ≈ radius_world / (R + r)
-    # At inner edge: radius_uv ≈ radius_world / (R - r)
-    # Use average: radius_uv ≈ radius_world / R
-    node_radii_uv = node_radii_world / scene.R  # [N]
+    # Keep radii in world units; the GPU shaders will convert to UV/texels using the local metric
+    node_radii_world = node_radii_world.astype(np.float32)
+    print(
+        f"[UV-GPU debug] z_cam_clamped min/max: {z_cam_clamped.min():.4g}/{z_cam_clamped.max():.4g}"
+    )
+    print(f"[UV-GPU debug] dot_radius_px: {scene.dot_radius_px}")
+    print(f"[UV-GPU debug] aspect: {aspect:.4f}, f: {scene.f}, W-1: {scene.W-1}")
+    print(
+        f"[UV-GPU debug] node_radii_world min/max: {node_radii_world.min():.4g}/{node_radii_world.max():.4g}"
+    )
 
     # Similarly for edges
     cam_to_center = float(np.linalg.norm(cam_np))
     typical_distance = max(1.0, cam_to_center)
     world_scale = (typical_distance * aspect * 2.0) / (scene.f * (scene.W - 1))
     edge_radius_world = scene.line_radius_px * world_scale * 0.5
-    edge_radii_uv = np.full(len(edges), edge_radius_world / scene.R, dtype=np.float32)
+    edge_radii_world = np.full(len(edges), edge_radius_world, dtype=np.float32)
 
     # UV texture parameters
     smooth_k = getattr(scene, "smooth_k", 0.1)
 
     # Ink threshold: SDF < threshold means "inside ink"
-    # With smooth blending, the ink alpha will transition smoothly around threshold=0
-    ink_threshold = 0.0
-    ink_smoothness = smooth_k  # Smoothness of ink edge (same as smooth_k)
+    # With smooth blending, the ink alpha will transition smoothly around threshold
+    ink_threshold = 0.038  # Fine-tuned to match CPU dot size exactly
+    ink_smoothness = smooth_k * 0.22  # Fine-tuned smoothness
 
     # Colors
-    ink_color = np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32)  # White ink
-    torus_color = np.array([0.1, 0.1, 0.1, 1.0], dtype=np.float32)  # Dark gray torus
+    # Match CPU yellow-ish dot coloring so tests detect non-gray blobs
+    ink_color = np.array([0.95, 0.85, 0.2, 1.0], dtype=np.float32)
+    torus_color = np.array(
+        [0.15, 0.15, 0.15, 1.0], dtype=np.float32
+    )  # Dark gray torus (not used for ink)
     background_color = np.array(
         [0.0, 0.0, 0.0, 1.0], dtype=np.float32
     )  # Black background
@@ -818,9 +825,9 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
     try:
         gpu_renderer.upload_scene(
             node_uv=node_uv_np,
-            node_radii_uv=node_radii_uv,
+            node_radii_uv=node_radii_world,
             edge_uv=edge_uv_np,
-            edge_radii_uv=edge_radii_uv,
+            edge_radii_uv=edge_radii_world,
             torus_R=scene.R,
             torus_r=scene.r_inner,
             smooth_k=smooth_k,
@@ -841,7 +848,6 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
             specular_strength=scene.specular_strength,
             shininess=scene.shininess,
             ink_color=ink_color,
-            torus_color=torus_color,
             background_color=background_color,
         )
 

@@ -27,6 +27,7 @@ class Scene:
     u0_cam: float = -math.pi / 4
     v_cam: float = -0.28
     eps_wall: float = 0.05
+    # NOTE: The camera is **inside** the torus tube, so r_cam must be < r_inner
 
     # raymarch
     hit_eps: float = 1.2e-3
@@ -59,7 +60,7 @@ class Scene:
     )  # directional light direction (will be normalized)
     ambient: float = 0.3
     diffuse_strength: float = 0.6
-    specular_strength: float = 0.5
+    specular_strength: float = 0.15
     shininess: float = 32.0
 
     # smooth blending (SDF operations)

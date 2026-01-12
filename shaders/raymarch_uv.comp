@@ -38,30 +38,40 @@ uniform float shininess;
 
 // Uniforms: Colors
 uniform vec4 inkColor;         // Color for ink features
-uniform vec4 torusColor;       // Base torus color
 uniform vec4 backgroundColor;  // Background color
 
 // Constants
 const float PI = 3.14159265359;
 const float TWO_PI = 6.28318530718;
 
-// Inverted Torus SDF: "Outside is solid, only tube cavity is empty"
-// Negative inside the tube, positive everywhere else (solid)
+// Torus SDF: Inside tube is negative, outside is positive
 float torus_sdf(vec3 p, float R, float r) {
     float rho = length(p.xy);
     float d_ring = length(vec2(rho - R, p.z));
-    // Negate: inside tube is negative (empty), outside is positive (solid)
-    return -(d_ring - r);
+    return d_ring - r;  // Positive outside the tube, negative inside
+}
+
+// Hollow torus SDF: cavity inside, solid outside
+// Inside the tube (cavity): negative SDF
+// Outside the tube (solid): positive SDF
+// For ray marching from inside the cavity, we look for SDF crossing zero outward
+float hollow_torus_sdf(vec3 p, float R, float r) {
+    float rho = length(p.xy);
+    float d_ring = length(vec2(rho - R, p.z));
+    return d_ring - r;  // Negative inside cavity, positive outside solid
 }
 
 // Estimate normal via gradient
 vec3 estimate_normal(vec3 p, float R, float r) {
-    const vec3 e = vec3(0.001, 0.0, 0.0);
-    return normalize(vec3(
-        torus_sdf(p + e.xyy, R, r) - torus_sdf(p - e.xyy, R, r),
-        torus_sdf(p + e.yxy, R, r) - torus_sdf(p - e.yxy, R, r),
-        torus_sdf(p + e.yyx, R, r) - torus_sdf(p - e.yyx, R, r)
-    ));
+    const vec3 e = vec3(0.01, 0.0, 0.0);  // Increased epsilon for better gradient
+    vec3 grad = vec3(
+        hollow_torus_sdf(p + e.xyy, R, r) - hollow_torus_sdf(p - e.xyy, R, r),
+        hollow_torus_sdf(p + e.yxy, R, r) - hollow_torus_sdf(p - e.yxy, R, r),
+        hollow_torus_sdf(p + e.yyx, R, r) - hollow_torus_sdf(p - e.yyx, R, r)
+    );
+    float grad_len = length(grad);
+    if (grad_len < 1e-6) return vec3(0.0, 0.0, 1.0);  // Fallback if gradient is degenerate
+    return grad / grad_len;
 }
 
 // Compute UV coordinates for a point on the torus
@@ -93,10 +103,10 @@ vec3 phong_shade(vec3 normal, vec3 view_dir, vec3 light_dir, vec3 base_color) {
     float diff = max(dot(normal, light_dir), 0.0);
     color += diffuse_strength * diff * base_color;
     
-    // Specular
+    // Specular (modulated by base color to avoid pure white dominating)
     vec3 reflect_dir = reflect(-light_dir, normal);
     float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
-    color += specular_strength * spec * vec3(1.0);
+    color += specular_strength * spec * base_color;
     
     return color;
 }
@@ -132,7 +142,7 @@ void main() {
     
     for (int step = 0; step < max_steps; step++) {
         hit_pos = ray_origin + t * ray_dir;
-        float dist = torus_sdf(hit_pos, torusR, torusr);
+        float dist = hollow_torus_sdf(hit_pos, torusR, torusr);
         
         if (dist < hit_eps) {
             hit = true;
@@ -143,7 +153,21 @@ void main() {
             break;
         }
         
-        t += dist;
+        // Sphere tracing: for negative dist (inside cavity), use very small steps
+        // For positive dist (outside), use normal sphere tracing
+        float step_size;
+        if (dist < 0.0) {
+            // Inside cavity: take very small steps (linear interpolation to surface)
+            // 20% of distance to surface to be safe
+            step_size = -dist * 0.2;
+            // Clamp to reasonable bounds
+            step_size = max(step_size, 0.01);
+            step_size = min(step_size, 0.05);
+        } else {
+            // Outside cavity: use standard sphere tracing
+            step_size = dist + hit_eps * 0.1;
+        }
+        t += step_size;
     }
     
     vec4 final_color;
@@ -159,15 +183,17 @@ void main() {
         // Compute ink alpha based on SDF value
         float ink_alpha = smooth_ink_alpha(ink_sdf, inkThreshold, inkSmoothness);
         
-        // Blend between torus base color and ink color
-        vec3 base_color = mix(torusColor.rgb, inkColor.rgb, ink_alpha);
-        
-        // Compute shading
-        vec3 normal = estimate_normal(hit_pos, torusR, torusr);
-        vec3 view_dir = normalize(camera_pos - hit_pos);
-        vec3 shaded_color = phong_shade(normal, view_dir, light_dir, base_color);
-        
-        final_color = vec4(shaded_color, 1.0);
+        // If ink is present, render it with shading to match CPU
+        if (ink_alpha > 0.1) {
+            // Compute normal for shading
+            vec3 normal = estimate_normal(hit_pos, torusR, torusr);
+            vec3 view_dir = normalize(camera_pos - hit_pos);
+            vec3 shaded_ink = phong_shade(normal, view_dir, light_dir, inkColor.rgb);
+            final_color = vec4(shaded_ink, 1.0);
+        } else {
+            // Non-ink areas render as black
+            final_color = vec4(0.0, 0.0, 0.0, 1.0);
+        }
     } else {
         // Ray missed - use background color
         final_color = backgroundColor;

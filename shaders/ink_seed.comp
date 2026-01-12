@@ -32,11 +32,35 @@ uniform int numNodes;
 uniform int numEdges;
 uniform int texWidth;
 uniform int texHeight;
+uniform float torusR;
+uniform float torusr;
 
 // Constants
 const float PI = 3.14159265359;
 const float TWO_PI = 6.28318530718;
 const int SEED_NONE = -1;
+
+// Wrap angle difference to [-PI, PI]
+float wrap_angle_diff(float a, float b) {
+    float diff = a - b;
+    while (diff > PI) diff -= TWO_PI;
+    while (diff < -PI) diff += TWO_PI;
+    return diff;
+}
+
+// Convert world-space radius to an approximate texel footprint using local torus metric
+float radius_world_to_texels(vec2 uv_center, float radius_world) {
+    float u_scale = torusR + torusr * cos(uv_center.y);
+    float v_scale = torusr;
+    float texel_size = TWO_PI / float(texWidth);  // Assume square texels
+    
+    // Convert world radius to angular extent in radians.
+    // Use v_scale (the minor radius) since the sphere projects more strongly in that direction
+    float radius_angular = radius_world / max(v_scale, 1e-6);
+    float r_texels = radius_angular / texel_size;
+    
+    return r_texels;
+}
 
 // Convert UV [-PI, PI] to texel coordinates
 ivec2 uv_to_texel(vec2 uv) {
@@ -69,10 +93,10 @@ void seed_texel(ivec2 texel, int seed_id) {
 // Rasterize a dot (circle in UV space)
 void rasterize_dot(int node_idx) {
     vec2 center_uv = nodeUV[node_idx];
-    float radius_uv = nodeRadii[node_idx];
-    
-    // Convert radius to approximate texel count
-    float radius_texels = radius_uv / (TWO_PI / float(texWidth));
+    float radius_world = nodeRadii[node_idx];
+
+    // Convert radius to approximate texel count using local metric
+    float radius_texels = radius_world_to_texels(center_uv, radius_world);
     int r_texels = int(ceil(radius_texels)) + 1;
     
     ivec2 center_texel = uv_to_texel(center_uv);
@@ -98,7 +122,7 @@ void rasterize_dot(int node_idx) {
 void rasterize_edge(int edge_idx) {
     vec2 uv0 = edgeUV[edge_idx].xy;
     vec2 uv1 = edgeUV[edge_idx].zw;
-    float radius_uv = edgeRadii[edge_idx];
+    float radius_world = edgeRadii[edge_idx];
     
     // Seed ID: numNodes + edge_idx
     int seed_id = numNodes + edge_idx;
@@ -122,7 +146,11 @@ void rasterize_edge(int edge_idx) {
     int steps = max(abs(dx), abs(dy));
     if (steps == 0) steps = 1;
     
-    float radius_texels = radius_uv / (TWO_PI / float(texWidth));
+    // Use midpoint metric to convert to texel footprint
+    float du_mid = wrap_angle_diff(uv1.x, uv0.x) * 0.5;
+    float dv_mid = wrap_angle_diff(uv1.y, uv0.y) * 0.5;
+    vec2 mid_uv = vec2(uv0.x + du_mid, uv0.y + dv_mid);
+    float radius_texels = radius_world_to_texels(mid_uv, radius_world);
     int r_texels = int(ceil(radius_texels)) + 1;
     
     // Rasterize line with thickness

@@ -120,7 +120,7 @@ class UVGPURenderer:
         edge_uv: np.ndarray,  # [E, 4] - (u0, v0, u1, v1) for each edge
         edge_radii_uv: np.ndarray,  # [E] - Line radii in UV space
         torus_R: float,  # Major radius
-        torus_r: float,  # Minor radius
+        torus_r: float,  # Minor radius (tube radius)
         smooth_k: float,  # Smoothing factor
         ink_threshold: float,  # SDF threshold for ink visibility
         ink_smoothness: float,  # Smoothness of ink edge
@@ -137,7 +137,6 @@ class UVGPURenderer:
         specular_strength: float,
         shininess: float,
         ink_color: np.ndarray,  # [4] - RGBA
-        torus_color: np.ndarray,  # [4] - RGBA
         background_color: np.ndarray,  # [4] - RGBA
     ):
         """
@@ -207,6 +206,8 @@ class UVGPURenderer:
         self.ink_seed_program["numEdges"] = self.num_edges
         self.ink_seed_program["texWidth"] = self.uv_texture_size
         self.ink_seed_program["texHeight"] = self.uv_texture_size
+        self.ink_seed_program["torusR"] = torus_R
+        self.ink_seed_program["torusr"] = torus_r
 
         # Set uniforms for Pass A - Stage 2 (JFA)
         self.ink_jfa_program["texWidth"] = self.uv_texture_size
@@ -247,9 +248,13 @@ class UVGPURenderer:
 
         # Colors
         self.raymarch_program["inkColor"] = tuple(ink_color.astype(np.float32))
-        self.raymarch_program["torusColor"] = tuple(torus_color.astype(np.float32))
         self.raymarch_program["backgroundColor"] = tuple(
             background_color.astype(np.float32)
+        )
+
+        # Sampler uniforms for Pass B (CRITICAL: bind sampler to texture unit 0)
+        self.raymarch_program["inkSDFTexture"] = (
+            0  # Matches use(location=0) in render()
         )
 
     def render(self) -> np.ndarray:
@@ -266,6 +271,20 @@ class UVGPURenderer:
         """
         groups_x = (self.uv_texture_size + 7) // 8
         groups_y = (self.uv_texture_size + 7) // 8
+
+        # Clear seed/SDF textures to known values before seeding
+        # Seed textures store seed IDs (int). Use -1 to mark "no seed" everywhere.
+        seed_clear = np.full(
+            (self.uv_texture_size * self.uv_texture_size,), -1, dtype=np.int32
+        )
+        self.seed_texture_a.write(seed_clear)
+        self.seed_texture_b.write(seed_clear)
+
+        # SDF texture stores distances (float). Initialize to a large positive value.
+        sdf_clear = np.full(
+            (self.uv_texture_size * self.uv_texture_size,), 1e9, dtype=np.float32
+        )
+        self.ink_sdf_texture.write(sdf_clear)
 
         # ===== PASS A - STAGE 1: Seed Primitives =====
 
@@ -342,6 +361,31 @@ class UVGPURenderer:
             moderngl.SHADER_IMAGE_ACCESS_BARRIER_BIT
             | moderngl.TEXTURE_FETCH_BARRIER_BIT
         )
+
+        # Debug: inspect SDF stats to ensure seeds propagated
+        sdf_bytes = self.ink_sdf_texture.read()
+        sdf_vals = np.frombuffer(sdf_bytes, dtype=np.float32)
+        if sdf_vals.size > 0:
+            print(
+                f"[UV-GPU debug] ink_sdf min/max: {sdf_vals.min():.4g}/{sdf_vals.max():.4g}"
+            )
+
+        # SANITY CHECK: replace ink_sdf_texture with a known UV checkerboard pattern to test Pass B
+        # If you see a checker pattern wrapped on the torus, Pass B is working and Pass A is the problem
+        # If you see solid color or garbage, Pass B is broken (sampler/UV mapping issue)
+        ENABLE_UV_CHECKER_TEST = False
+        if ENABLE_UV_CHECKER_TEST:
+            print(
+                "[UV-GPU debug] SANITY CHECK: overwriting ink_sdf with UV checkerboard pattern"
+            )
+            W = H = self.uv_texture_size
+            uu = np.linspace(0.0, 1.0, W, endpoint=False, dtype=np.float32)[None, :]
+            vv = np.linspace(0.0, 1.0, H, endpoint=False, dtype=np.float32)[:, None]
+            # 10x10 periodic checker in UV
+            pattern = ((np.floor(uu * 10) + np.floor(vv * 10)) % 2).astype(np.float32)
+            # Map {0,1} -> {-0.5, +0.5} so it looks like an SDF-ish signal
+            pattern = pattern - 0.5
+            self.ink_sdf_texture.write(pattern.tobytes())
 
         # ===== PASS B: Ray march torus + sample ink texture =====
 
