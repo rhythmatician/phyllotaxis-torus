@@ -292,7 +292,6 @@ def test_medium_nodes():
     print(f"  Similar: {metrics['is_similar']}")
     
     # Count colored spheres
-    cpu_sphere_count = count_colored_spheres(cpu_img)
     print(f"  CPU Spheres: {metrics['spheres_count_1']}")
     print(f"  GPU Spheres: {metrics['spheres_count_2']}")
     print(f"  Spheres Match: {metrics['spheres_match']}")
