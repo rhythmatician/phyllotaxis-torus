@@ -37,10 +37,20 @@ class UVGPURenderer:
         self.uv_texture_size = uv_texture_size
         self.ctx: moderngl.Context
         # Create OpenGL context (standalone for headless rendering)
+        # Try EGL backend first (works headless with Mesa llvmpipe), fallback to default
         try:
-            self.ctx = moderngl.create_standalone_context()
-        except Exception as e:
-            raise RuntimeError(f"Failed to create OpenGL context: {e}")
+            self.ctx = moderngl.create_standalone_context(backend='egl')
+        except Exception as egl_error:
+            # If EGL fails, try default backend (may require X11 display)
+            try:
+                self.ctx = moderngl.create_standalone_context()
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to create OpenGL context: {e}\n"
+                    f"(EGL backend also failed: {egl_error})\n"
+                    f"For headless environments, ensure libegl1 is installed: "
+                    f"apt-get install libegl1 libgbm1"
+                )
 
         # Get GPU info
         self.gpu_info = self._get_gpu_info()
