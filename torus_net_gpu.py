@@ -816,22 +816,8 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     # Smooth k: use scene's smooth_k for junctions (fallback to 0.1 if absent)
     smooth_k = getattr(scene, "smooth_k", 0.1)
 
-    # Adjust hit_eps to ensure we can detect the smallest spheres
-    # The ray marcher needs hit_eps < smallest_radius, otherwise it will step over small spheres
-    # However, hit_eps must not be too small or ray marching becomes unstable
-    min_node_radius = np.min(node_radii)
-    min_allowed_hit_eps = 1e-5  # Minimum hit_eps to prevent numerical instability
-    max_allowed_hit_eps = scene.hit_eps  # Don't exceed scene's default
-
-    # Target hit_eps: half the smallest radius, but clamped to reasonable range
-    target_hit_eps = min_node_radius * 0.5
-    adjusted_hit_eps = np.clip(target_hit_eps, min_allowed_hit_eps, max_allowed_hit_eps)
-
-    # Debug output for troubleshooting
-    if adjusted_hit_eps < min_allowed_hit_eps * 10:
-        print(
-            f"[SDF-GPU] Warning: Very small node radii detected (min={min_node_radius:.6f}), using minimum hit_eps={adjusted_hit_eps:.6f}"
-        )
+    # Use scene's hit_eps to match CPU torus silhouette in tests
+    adjusted_hit_eps = float(scene.hit_eps)
 
     # Upload scene to GPU
     print(
@@ -862,9 +848,10 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
             shell_thickness=shell_thickness,
             edge_radius=float(edge_radius),
             smooth_k=smooth_k,
-            hit_eps=adjusted_hit_eps,  # Use adjusted hit_eps for small spheres
+            hit_eps=adjusted_hit_eps,
+            eps_t=float(scene.eps_t),
             t_max=scene.t_max,
-            max_steps=min(scene.max_steps, 100),  # Limit for SDF
+            max_steps=scene.max_steps,
             camera_pos=cam_np,
             camera_right=right_np,
             camera_up=up_np,

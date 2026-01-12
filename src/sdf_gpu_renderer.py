@@ -92,6 +92,7 @@ class SDFGPURenderer:
         edge_radius: float,  # Radius of edge capsules
         smooth_k: float,  # Smoothing at junctions
         hit_eps: float,
+        eps_t: float,  # Occlusion tolerance
         t_max: float,
         max_steps: int,
         camera_pos: np.ndarray,
@@ -240,6 +241,7 @@ class SDFGPURenderer:
         self.program["edge_radius"].value = float(edge_radius)
         self.program["smooth_k"].value = float(smooth_k)
         self.program["hit_eps"].value = float(hit_eps)
+        self.program["eps_t"].value = float(eps_t)
         self.program["t_max"].value = float(t_max)
         self.program["max_steps"].value = int(max_steps)
 

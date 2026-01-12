@@ -13,6 +13,7 @@ uniform float shell_thickness;   // Thickness of inside shell band
 uniform float edge_radius;      // Radius of edge capsules
 uniform float smooth_k;         // Smoothing factor for junctions
 uniform float hit_eps;
+uniform float eps_t;
 uniform float t_max;
 uniform int max_steps;
 uniform vec3 camera_pos;
@@ -291,11 +292,13 @@ vec3 phong_shade(
     vec3 diffuse_col = diffuse_strength_param * diff * base_color;
 
     // Specular component (Blinn-Phong) - applied to base_color to preserve color
-    vec3 half_vec = normalize(view_dir_norm + light_dir_norm);
+    vec3 half_vec_unnorm = view_dir_norm + light_dir_norm;
+    float half_vec_len = length(half_vec_unnorm);
+    vec3 half_vec = half_vec_unnorm / max(half_vec_len, 1e-6);
     float spec = max(dot(normal_norm, half_vec), 0.0);
     float spec_pow = pow(spec, shininess_param);
-    // Apply specular to base_color instead of white to preserve color saturation
-    vec3 specular_col = specular_strength_param * spec_pow * base_color;
+    // Match CPU shading: white specular highlight
+    vec3 specular_col = specular_strength_param * spec_pow * vec3(1.0);
 
     return ambient_col + diffuse_col + specular_col;
 }
@@ -362,50 +365,51 @@ void main() {
 
     vec3 ray_origin = camera_pos;
 
-    // Ray marching toward ink (nodes + edges) and torus surface
-    float t = 0.0;
+    // Pass 1: march to torus surface only to get occlusion depth
+    float t_torus = 0.0;
+    bool torus_hit = false;
+    for (int step = 0; step < max_steps; step++) {
+        vec3 pos = ray_origin + t_torus * ray_dir;
+        float d = abs(torus_sdf(pos, torus_R, torus_r));
+        if (d < hit_eps) { torus_hit = true; break; }
+        t_torus += max(d, hit_eps * 0.5);
+        if (t_torus > t_max) break;
+    }
+
+    // Pass 2: analytic ray–sphere intersections for all nodes
+    float best_t = 1e20;
+    int best_i = -1;
+    for (int i = 0; i < numNodes; i++) {
+        vec3 center = node_positions[i];
+        float radius = node_radii[i];
+        vec3 L = center - ray_origin;
+        float b = dot(ray_dir, L);
+        float c = dot(L, L) - radius * radius;
+        float disc = b * b - c;
+        if (disc > 0.0) {
+            float t_s = b - sqrt(disc);
+            if (t_s > 0.0 && t_s < best_t) {
+                best_t = t_s;
+                best_i = i;
+            }
+        }
+    }
+
     bool hit_ink = false;
     bool hit_torus = false;
     vec3 hit_pos;
     int hit_type = -1;
     int hit_idx = -1;
 
-    for (int step = 0; step < max_steps; step++) {
-        vec3 pos = ray_origin + t * ray_dir;
-
-        // Compute ink SDF (nodes + edges only)
-        int temp_type, temp_idx;
-        float ink_sdf = scene_sdf(pos, temp_type, temp_idx);
-
-        // Compute torus surface SDF (use abs to find nearest surface)
-        float torus_surface_sdf = abs(torus_sdf(pos, torus_R, torus_r));
-
-        // March toward whichever is closer
-        float sdf = min(ink_sdf, torus_surface_sdf);
-
-        if (sdf < hit_eps) {
-            // Hit something! Check what it was
-            if (ink_sdf < torus_surface_sdf) {
-                // Hit ink (node or edge)
-                hit_ink = true;
-                hit_pos = pos;
-                hit_type = temp_type;
-                hit_idx = temp_idx;
-            } else {
-                // Hit torus surface
-                hit_torus = true;
-                hit_pos = pos;
-            }
-            break;
-        }
-
-        if (t > t_max) {
-            // Ray escaped without hitting anything
-            break;
-        }
-
-        // Sphere tracing step
-        t += max(sdf, hit_eps * 0.5);  // Prevent tiny steps
+    if (best_i >= 0 && (!torus_hit || best_t <= t_torus + eps_t)) {
+        // Sphere is visible (not occluded by torus) - use eps_t to match CPU
+        hit_ink = true;
+        hit_type = 0;
+        hit_idx = best_i;
+        hit_pos = ray_origin + best_t * ray_dir;
+    } else if (torus_hit) {
+        hit_torus = true;
+        hit_pos = ray_origin + t_torus * ray_dir;
     }
 
     // Compute output color
@@ -418,20 +422,8 @@ void main() {
         // Compute normal at hit point
         vec3 normal;
         if (hit_type == 0) {
-            // Refine sphere hit using exact ray-sphere intersection
-            vec3 center = node_positions[hit_idx];
-            float radius = node_radii[hit_idx];
-            vec3 L = center - camera_pos;
-            float b = dot(ray_dir, L);
-            float c = dot(L, L) - radius * radius;
-            float disc = b * b - c;
-            if (disc > 0.0) {
-                float t_s = b - sqrt(disc);
-                if (t_s > 0.0 && t_s < t_max) {
-                    hit_pos = camera_pos + t_s * ray_dir;
-                }
-            }
             // Analytical normal for sphere: radial from center
+            vec3 center = node_positions[hit_idx];
             normal = normalize(hit_pos - center);
         } else {
             // Fallback to gradient-based normal for edges
@@ -439,7 +431,9 @@ void main() {
         }
 
         // Compute view direction (from hit point toward camera)
-        vec3 view_dir = normalize(camera_pos - hit_pos);
+        vec3 view_dir_unnorm = camera_pos - hit_pos;
+        float view_len = length(view_dir_unnorm);
+        vec3 view_dir = view_dir_unnorm / max(view_len, 1e-6);
 
         // Apply Phong shading
         vec3 shaded_color = phong_shade(
