@@ -673,7 +673,7 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
         render_cpu(scene, steps, out_path)
         return
 
-    print(f"[GPU] Initializing OpenGL renderer...")
+    print("[GPU] Initializing OpenGL renderer...")
 
     gpu_renderer = None  # Initialize to avoid NameError in exception handlers
     try:
@@ -855,7 +855,7 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
             f"[GPU] Warning: {len(centers_np)} spheres may be slow without hardware GPU acceleration"
         )
         print(
-            f"[GPU] Consider using --steps without arguments (dots only) for faster rendering, or use GPU hardware acceleration."
+            "[GPU] Consider using --steps without arguments (dots only) for faster rendering, or use GPU hardware acceleration."
         )
 
     # For GPU rendering, reduce max_steps to improve performance
@@ -938,7 +938,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         render_cpu(scene, steps, out_path)
         return
 
-    print(f"[SDF-GPU] Initializing OpenGL SDF renderer...")
+    print("[SDF-GPU] Initializing OpenGL SDF renderer...")
 
     gpu_renderer = None  # Initialize to avoid NameError in exception handlers
     try:
@@ -1179,7 +1179,7 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
         render_cpu(scene, steps, out_path)
         return
 
-    print(f"[UV-GPU] Initializing OpenGL UV-texture-based renderer...")
+    print("[UV-GPU] Initializing OpenGL UV-texture-based renderer...")
 
     gpu_renderer = None
     try:
@@ -1300,7 +1300,7 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
 
     # Upload scene to GPU
     print(f"[UV-GPU] Uploading {len(node_uv_np)} nodes and {len(edges)} edges...")
-    print(f"[UV-GPU] Building ink SDF texture (Pass A)...")
+    print("[UV-GPU] Building ink SDF texture (Pass A)...")
 
     try:
         gpu_renderer.upload_scene(
@@ -1333,7 +1333,7 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
         )
 
         # Render (Pass A + Pass B)
-        print(f"[UV-GPU] Ray marching torus and sampling ink texture (Pass B)...")
+        print("[UV-GPU] Ray marching torus and sampling ink texture (Pass B)...")
         img_rgba = gpu_renderer.render()
 
         # Convert RGBA to RGB for output

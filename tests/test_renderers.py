@@ -8,19 +8,18 @@ Or just: python test_renderers.py
 
 import sys
 from pathlib import Path
-
-from count_colored_spheres import count_colored_spheres
-
-# Add parent directory to path to import torus_net_gpu
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import pytest
 import json
 import numpy as np
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
+from count_colored_spheres import count_colored_spheres
 
-from torus_net_gpu import (
+# Add parent directory to path to import torus_net_gpu
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+
+from torus_net_gpu import (  # noqa: E402
     render_cpu,
     render_gpu,
     render_sdf_gpu,
@@ -127,11 +126,11 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
                 # CPU renderer doesn't set a "renderer" field, or sets it differently
                 if renderer == "sdf-gpu" and "SDF-GPU" not in actual_renderer:
                     raise AssertionError(
-                        f"SDF-GPU renderer fell back to CPU! Check shader compilation errors."
+                        "SDF-GPU renderer fell back to CPU! Check shader compilation errors."
                     )
                 elif renderer == "gpu" and "GPU" not in actual_renderer:
                     raise AssertionError(
-                        f"GPU renderer fell back to CPU! Check OpenGL initialization."
+                        "GPU renderer fell back to CPU! Check OpenGL initialization."
                     )
 
     return png_path
@@ -174,7 +173,7 @@ def test_single_node():
     # Compare
     metrics = compare_images(cpu_img, gpu_img, threshold=0.99)
 
-    print(f"\n[Test 1: Single Node]")
+    print("\n[Test 1: Single Node]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
     print(f"  MSE: {metrics['mse']:.6f}")
     print(f"  Max Diff: {metrics['max_diff']:.6f}")
@@ -232,7 +231,7 @@ def test_few_nodes():
         cpu_img, gpu_img, threshold=0.999
     )  # Was passing at 0.99 even though visually different
 
-    print(f"\n[Test 2: Few Nodes (N=13)]")
+    print("\n[Test 2: Few Nodes (N=13)]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
     print(f"  MSE: {metrics['mse']:.6f}")
     print(f"  Max Diff: {metrics['max_diff']:.6f}")
@@ -288,7 +287,7 @@ def test_medium_nodes():
     # Compare
     metrics = compare_images(cpu_img, gpu_img, threshold=0.999)
 
-    print(f"\n[Test 3: Medium Nodes (N=89)]")
+    print("\n[Test 3: Medium Nodes (N=89)]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
     print(f"  MSE: {metrics['mse']:.6f}")
     print(f"  Max Diff: {metrics['max_diff']:.6f}")

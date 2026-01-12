@@ -313,5 +313,5 @@ def test_sdf_gpu_availability() -> Tuple[bool, Optional[dict]]:
         }
         ctx.release()
         return True, gpu_info
-    except Exception as e:
+    except Exception:
         return False, None
