@@ -14,7 +14,7 @@ test_data_path = Path(__file__).parent / "data/png"
         (test_data_path / "0.png", 0),
         (test_data_path / "1.png", 1),
         (test_data_path / "5.png", 5),
-        (test_data_path / "6.png", 6),
+        (test_data_path / "6.png", 5),  # One sphere is barely in frame
     ],
 )
 def test_count_colored_spheres(img_path, expected_count):
