@@ -9,7 +9,7 @@ uniform int numEdges;
 uniform float torus_R;          // Major radius
 uniform float torus_r;          // Minor radius
 uniform float shell_thickness;   // Thickness of inside shell band
-uniform float node_radius;      // Radius of node spheres
+// node_radius is now per-node in buffer binding 5
 uniform float edge_radius;      // Radius of edge capsules
 uniform float smooth_k;         // Smoothing factor for junctions
 uniform float hit_eps;
@@ -37,6 +37,10 @@ layout(std430, binding = 1) buffer NodeColors {
     vec4 node_colors[];     // RGBA colors for nodes
 };
 
+layout(std430, binding = 5) buffer NodeRadii {
+    float node_radii[];     // Per-node radii in world space
+};
+
 layout(std430, binding = 2) buffer EdgeIndices {
     ivec2 edge_indices[];   // Pairs of node indices (i0, i1)
 };
@@ -54,7 +58,7 @@ layout(std430, binding = 4) buffer OutputImage {
 // ============================================================================
 
 // Torus SDF
-float hollow_torus_sdf(vec3 pos, float R, float r) {
+float torus_sdf(vec3 pos, float R, float r) {
     vec2 q = vec2(length(pos.xy) - R, pos.z);
     return length(q) - r;
 }
@@ -62,8 +66,8 @@ float hollow_torus_sdf(vec3 pos, float R, float r) {
 // Hollow torus (shell with thickness)
 // Returns negative inside the hollow interior, positive outside the shell
 float hollow_torus_sdf(vec3 pos, float R, float r_outer, float thickness) {
-    float torus_outer = hollow_torus_sdf(pos, R, r_outer);
-    float torus_inner = hollow_torus_sdf(pos, R, r_outer - thickness);
+    float torus_outer = torus_sdf(pos, R, r_outer);
+    float torus_inner = torus_sdf(pos, R, r_outer - thickness);
     // Shell is the region between outer and inner surfaces
     // For a hollow torus, inside is negative, shell is near-zero, outside is positive
     return max(torus_outer, -torus_inner);
@@ -112,8 +116,9 @@ float op_difference(float d1, float d2) {
 // ============================================================================
 
 // Inside shell band of torus (only inner surface)
+// NOTE: This function is not currently used in the shader
 float torus_inside_shell_sdf(vec3 pos, float R, float r, float thickness) {
-    float torus_dist = hollow_torus_sdf(pos, R, r);
+    float torus_dist = torus_sdf(pos, R, r);
     // Inside shell: torus surface moved inward by thickness
     // We want points that are inside the torus (dist < 0) but within thickness distance
     float shell_inner = torus_dist + thickness;
@@ -159,8 +164,8 @@ float edge_ink_sdf(vec3 pos, vec3 a, vec3 b, float line_width, float R, float r,
     // 3D capsule between endpoints
     float capsule = capsule_sdf(pos, a, b, line_width);
     
-    // Torus surface
-    float torus = hollow_torus_sdf(pos, R, r);
+    // Torus surface (use solid torus at r_inner)
+    float torus = torus_sdf(pos, R, r);
     
     // INTERSECTION: only where the capsule AND torus surface meet
     // This constrains the line to follow the torus surface
@@ -188,7 +193,8 @@ float edges_network_sdf(vec3 pos) {
 // The positions are already on the torus surface, so no need to constrain
 float node_sphere_sdf(vec3 pos, int idx) {
     vec3 center = node_positions[idx];
-    return sphere_sdf(pos, center, node_radius);
+    float radius = node_radii[idx];  // Use per-node radius
+    return sphere_sdf(pos, center, radius);
 }
 
 // All node spheres
@@ -207,8 +213,9 @@ float nodes_sdf(vec3 pos) {
 
 // Combined scene: smooth union at junctions
 float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
-    // hit_type: 0 = node, 1 = edge, 2 = torus shell (background)
+    // hit_type: 0 = node, 1 = edge
     // hit_idx: index of node or edge
+    // Note: Torus is NOT included - only ink (nodes + edges)
     
     float nodes_dist = nodes_sdf(pos);
     float edges_dist = edges_network_sdf(pos);
@@ -216,14 +223,8 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
     // Smooth union between nodes and edges at junctions
     float ink_dist = op_smooth_union(nodes_dist, edges_dist, smooth_k);
     
-    // Add HOLLOW torus shell to scene (not solid - we need to see inside)
-    float torus_dist = hollow_torus_sdf(pos, torus_R, torus_r, shell_thickness);
-    
-    // Union of ink (nodes + edges) with torus shell
-    float scene_dist = op_union(ink_dist, torus_dist);
-    
     // Determine hit type based on which is closest
-    if (nodes_dist < edges_dist && nodes_dist < torus_dist) {
+    if (nodes_dist <= edges_dist) {
         hit_type = 0;  // Node
         // Find which node
         hit_idx = 0;
@@ -237,7 +238,7 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
                 }
             }
         }
-    } else if (edges_dist < torus_dist) {
+    } else {
         hit_type = 1;  // Edge
         // Find which edge (approximate - closest endpoint)
         hit_idx = 0;
@@ -255,12 +256,9 @@ float scene_sdf(vec3 pos, out int hit_type, out int hit_idx) {
                 }
             }
         }
-    } else {
-        hit_type = 2;  // Torus shell (background)
-        hit_idx = -1;
     }
     
-    return scene_dist;
+    return ink_dist;
 }
 
 // ============================================================================
@@ -377,9 +375,10 @@ void main() {
     
     vec3 ray_origin = camera_pos;
     
-    // Ray marching with sphere tracing
+    // Ray marching toward ink (nodes + edges) and torus surface
     float t = 0.0;
-    bool hit = false;
+    bool hit_ink = false;
+    bool hit_torus = false;
     vec3 hit_pos;
     int hit_type = -1;
     int hit_idx = -1;
@@ -387,20 +386,34 @@ void main() {
     for (int step = 0; step < max_steps; step++) {
         vec3 pos = ray_origin + t * ray_dir;
         
-        // Compute scene SDF
+        // Compute ink SDF (nodes + edges only)
         int temp_type, temp_idx;
-        float sdf = scene_sdf(pos, temp_type, temp_idx);
+        float ink_sdf = scene_sdf(pos, temp_type, temp_idx);
+        
+        // Compute torus surface SDF (use abs to find nearest surface)
+        float torus_surface_sdf = abs(torus_sdf(pos, torus_R, torus_r));
+        
+        // March toward whichever is closer
+        float sdf = min(ink_sdf, torus_surface_sdf);
         
         if (sdf < hit_eps) {
-            // Hit!
-            hit = true;
-            hit_pos = pos;
-            hit_type = temp_type;
-            hit_idx = temp_idx;
+            // Hit something! Check what it was
+            if (ink_sdf < torus_surface_sdf) {
+                // Hit ink (node or edge)
+                hit_ink = true;
+                hit_pos = pos;
+                hit_type = temp_type;
+                hit_idx = temp_idx;
+            } else {
+                // Hit torus surface
+                hit_torus = true;
+                hit_pos = pos;
+            }
             break;
         }
         
         if (t > t_max) {
+            // Ray escaped without hitting anything
             break;
         }
         
@@ -411,38 +424,35 @@ void main() {
     // Compute output color
     vec4 color;
     
-    if (hit) {
-        // Get base color
+    if (hit_ink) {
+        // Hit ink (node or edge) - apply shading
         vec4 base_color = get_hit_color(hit_type, hit_idx);
         
-        // Render torus shell as pure black (no lighting) to match CPU renderer
-        if (hit_type == 2) {
-            // Torus shell - render as pure black to match CPU
-            color = vec4(0.0, 0.0, 0.0, 1.0);
-        } else {
-            // Nodes and edges - apply Phong shading
-            // Compute normal at hit point
-            vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0);
-            
-            // Compute view direction (from hit point toward camera)
-            vec3 view_dir = normalize(camera_pos - hit_pos);
-            
-            // Apply Phong shading
-            vec3 shaded_color = phong_shade(
-                base_color.rgb,
-                normal,
-                view_dir,
-                light_dir,
-                ambient,
-                diffuse_strength,
-                specular_strength,
-                shininess
-            );
-            
-            color = vec4(shaded_color, base_color.a);
-        }
+        // Compute normal at hit point
+        vec3 normal = estimate_normal(hit_pos, hit_eps * 2.0);
+        
+        // Compute view direction (from hit point toward camera)
+        vec3 view_dir = normalize(camera_pos - hit_pos);
+        
+        // Apply Phong shading
+        vec3 shaded_color = phong_shade(
+            base_color.rgb,
+            normal,
+            view_dir,
+            light_dir,
+            ambient,
+            diffuse_strength,
+            specular_strength,
+            shininess
+        );
+        
+        color = vec4(shaded_color, base_color.a);
+    } else if (hit_torus) {
+        // Hit torus surface - render as black (the torus shell)
+        color = vec4(0.0, 0.0, 0.0, 1.0);
     } else {
-        // Miss - output background (white = makes missing torus obvious)
+        // No hit - ray escaped without hitting anything
+        // Render as white (background/artifact)
         color = vec4(1.0, 1.0, 1.0, 1.0);
     }
     

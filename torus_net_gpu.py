@@ -15,6 +15,7 @@ Examples:
   python torus_net_gpu.py --steps 13 21 --out out_13_21.png
   python torus_net_gpu.py --steps 34 55 --out out_34_55.png
   python torus_net_gpu.py --steps 1 13 21 --out spiral.png
+  python torus_net_gpu.py --sdf --out out_sdf.png
 """
 
 import argparse
@@ -231,7 +232,7 @@ def render_depth_t(scene: Scene, device, C, D) -> torch.Tensor:
             break
 
         P = C[None, :] + Df * t[:, None]
-        dist = torch.abs(hollow_torus_sdf(P, scene.R, scene.r_inner))
+        dist = torch.abs(torus_sdf(P, scene.R, scene.r_inner))
 
         hit = alive & (dist < scene.hit_eps)
         if hit.any():
@@ -953,24 +954,55 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
             if i + step < N:
                 edges.append((i, i + step))
     
-    # For now, skip edges - just render nodes to debug phyllotaxis pattern
-    # TODO: Add edge tessellation later
-    
     # Convert to numpy and add alpha channel
     node_positions_np = P.numpy()
     node_colors_rgba = torch.cat([node_cols, torch.ones((len(node_cols), 1), device=device)], dim=-1).numpy()
     
-    # Empty edge arrays for now
-    edge_indices_np = np.empty((0, 2), dtype=np.int32)
-    edge_colors_rgba = np.empty((0, 4), dtype=np.float32)
+    # Build edge arrays
+    if len(edges) > 0:
+        edge_indices_np = np.array(edges, dtype=np.int32)
+        
+        # Compute edge colors from midpoint v-coordinate (same as CPU renderer)
+        edge_i0 = torch.tensor([e[0] for e in edges], device=device, dtype=torch.int64)
+        edge_i1 = torch.tensor([e[1] for e in edges], device=device, dtype=torch.int64)
+        v0 = v[edge_i0]
+        v1 = v[edge_i1]
+        dv = wrap_pi_torch(v1 - v0)
+        v_mid = v0 + 0.5 * dv
+        
+        # Color from midpoint v (pingpong colormap)
+        t_raw_e = (v_mid % (2.0 * math.pi)) / (2.0 * math.pi)
+        t_pp_e = pingpong01(t_raw_e)
+        eidx = torch.clamp((t_pp_e * 255.0).to(torch.int64), 0, 255)
+        edge_cols = lut[eidx]  # [E,3]
+        edge_colors_rgba = torch.cat([edge_cols, torch.ones((len(edge_cols), 1), device=device)], dim=-1).numpy()
+    else:
+        edge_indices_np = np.empty((0, 2), dtype=np.int32)
+        edge_colors_rgba = np.empty((0, 4), dtype=np.float32)
     
     # Calculate SDF parameters
-    # Use the same world_scale approach as render_gpu for consistency
-    world_scale_default = 0.02
-    world_scale = getattr(scene, "world_scale", world_scale_default)
+    # Convert pixel radius to world-space radius using the same formula as the CPU renderer:
+    # r_world = (radius_px * z_cam * aspect * 2.0) / (scene.f * (W - 1))
+    # 
+    # To match the CPU renderer exactly, we calculate per-node radii based on each node's
+    # distance from the camera along the camera's forward direction (z_cam), not Euclidean distance.
+    aspect = scene.W / scene.H
     
-    # Node radius: similar to dot radius in world space
-    node_radius = scene.dot_radius_px * world_scale
+    # Calculate per-node z_cam (distance along camera forward direction)
+    # This matches the CPU renderer's project_points function: z_cam = V · forward
+    V = node_positions_np - cam_np[np.newaxis, :]  # [N, 3]
+    z_cam = np.dot(V, forward_np)  # [N] - distance along forward direction
+    
+    # Apply CPU renderer's formula per node: r_world = radius_px * z_cam * aspect * 2.0 / (f * (W - 1))
+    node_radii = (scene.dot_radius_px * z_cam * aspect * 2.0) / (scene.f * (scene.W - 1))  # [N]
+    
+    # Calculate world_scale for edges using a typical distance
+    # For edges, we use the mean distance of the edge endpoints
+    cam_origin = np.array([0.0, 0.0, 0.0])  # Torus is centered at origin
+    cam_to_center = np.linalg.norm(cam_np - cam_origin)
+    typical_distance = max(1.0, scene.r_inner - cam_to_center) if cam_to_center < scene.r_inner else cam_to_center - scene.R
+    typical_distance = abs(typical_distance)
+    world_scale = (typical_distance * aspect * 2.0) / (scene.f * (scene.W - 1))
     
     # Capsules tend to render optically thicker than equivalent line/sphere chains,
     # so we deliberately scale them down by a fixed ratio in world space.
@@ -981,9 +1013,13 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     # Allow overriding the default 5% of minor radius via scene.shell_thickness_factor.
     shell_thickness_factor = getattr(scene, "shell_thickness_factor", 0.05)
     shell_thickness = scene.r_inner * shell_thickness_factor
-    
-    # Smooth k: use scene's smooth_k for junctions (fallback to 0.1 if absent)
+      # Smooth k: use scene's smooth_k for junctions (fallback to 0.1 if absent)
     smooth_k = getattr(scene, "smooth_k", 0.1)
+    
+    # Adjust hit_eps to ensure we can detect the smallest spheres
+    # The ray marcher needs hit_eps < smallest_radius, otherwise it will step over small spheres
+    min_node_radius = np.min(node_radii)
+    adjusted_hit_eps = min(scene.hit_eps, min_node_radius * 0.5)  # Use half the smallest radius
     
     # Upload scene to GPU
     print(f"[SDF-GPU] Uploading {len(node_positions_np)} nodes and {len(edge_indices_np)} edges...")
@@ -992,15 +1028,15 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
         gpu_renderer.upload_scene(
             node_positions=node_positions_np,
             node_colors=node_colors_rgba,
+            node_radii=node_radii,  # Per-node radii based on distance from camera
             edge_indices=edge_indices_np,
             edge_colors=edge_colors_rgba,
             torus_R=scene.R,
             torus_r=scene.r_inner,
             shell_thickness=shell_thickness,
-            node_radius=node_radius,
             edge_radius=edge_radius,
             smooth_k=smooth_k,
-            hit_eps=scene.hit_eps,
+            hit_eps=adjusted_hit_eps,  # Use adjusted hit_eps for small spheres
             t_max=scene.t_max,
             max_steps=min(scene.max_steps, 100),  # Limit for SDF
             camera_pos=cam_np,

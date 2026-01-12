@@ -45,6 +45,7 @@ class SDFGPURenderer:
         # Create buffers (will be populated later)
         self.node_positions_buffer = None
         self.node_colors_buffer = None
+        self.node_radii_buffer = None  # Per-node radii
         self.edge_indices_buffer = None
         self.edge_colors_buffer = None
         self.output_buffer = None
@@ -83,12 +84,12 @@ class SDFGPURenderer:
         self,
         node_positions: np.ndarray,    # [N, 3] - 3D positions on torus
         node_colors: np.ndarray,       # [N, 4] - RGBA colors
+        node_radii: np.ndarray,        # [N] - Per-node radii (world space)
         edge_indices: np.ndarray,      # [E, 2] - pairs of node indices
         edge_colors: np.ndarray,       # [E, 4] - RGBA colors for edges
         torus_R: float,                # Major radius
         torus_r: float,                # Minor radius
         shell_thickness: float,        # Thickness of inside shell band
-        node_radius: float,            # Radius of node spheres
         edge_radius: float,            # Radius of edge capsules
         smooth_k: float,               # Smoothing at junctions
         hit_eps: float,
@@ -111,12 +112,12 @@ class SDFGPURenderer:
         Args:
             node_positions: Node 3D positions [N, 3]
             node_colors: Node RGBA colors [N, 4]
+            node_radii: Per-node radii [N] in world space (calculated based on distance from camera)
             edge_indices: Edge endpoint indices [E, 2]
             edge_colors: Edge RGBA colors [E, 4]
             torus_R: Major radius of torus
             torus_r: Minor radius of torus
             shell_thickness: Thickness of inside shell band for ink
-            node_radius: Radius of node spheres
             edge_radius: Radius of edge capsule tubes
             smooth_k: Smoothing factor at junctions
             ... (camera and lighting parameters)
@@ -127,12 +128,14 @@ class SDFGPURenderer:
         # Ensure proper data types and shapes
         node_positions = np.asarray(node_positions, dtype=np.float32).reshape(-1, 3)
         node_colors = np.asarray(node_colors, dtype=np.float32).reshape(-1, 4)
+        node_radii = np.asarray(node_radii, dtype=np.float32).reshape(-1)
         edge_indices = np.asarray(edge_indices, dtype=np.int32).reshape(-1, 2)
         edge_colors = np.asarray(edge_colors, dtype=np.float32).reshape(-1, 4)
         
         # Compute required buffer sizes
         node_pos_nbytes = node_positions.nbytes
         node_col_nbytes = node_colors.nbytes
+        node_rad_nbytes = node_radii.nbytes
         edge_idx_nbytes = edge_indices.nbytes
         edge_col_nbytes = edge_colors.nbytes
         
@@ -140,10 +143,12 @@ class SDFGPURenderer:
         recreate_buffers = (
             self.node_positions_buffer is None
             or self.node_colors_buffer is None
+            or self.node_radii_buffer is None
             or self.edge_indices_buffer is None
             or self.edge_colors_buffer is None
             or self.node_positions_buffer.size != node_pos_nbytes
             or self.node_colors_buffer.size != node_col_nbytes
+            or self.node_radii_buffer.size != node_rad_nbytes
             or self.edge_indices_buffer.size != edge_idx_nbytes
             or self.edge_colors_buffer.size != edge_col_nbytes
         )
@@ -154,6 +159,8 @@ class SDFGPURenderer:
                 self.node_positions_buffer.release()
             if self.node_colors_buffer is not None:
                 self.node_colors_buffer.release()
+            if self.node_radii_buffer is not None:
+                self.node_radii_buffer.release()
             if self.edge_indices_buffer is not None:
                 self.edge_indices_buffer.release()
             if self.edge_colors_buffer is not None:
@@ -162,6 +169,7 @@ class SDFGPURenderer:
             # Create new buffers
             self.node_positions_buffer = self.ctx.buffer(node_positions.tobytes())
             self.node_colors_buffer = self.ctx.buffer(node_colors.tobytes())
+            self.node_radii_buffer = self.ctx.buffer(node_radii.tobytes())
             
             # Handle empty edge arrays
             if len(edge_indices) > 0:
@@ -182,12 +190,14 @@ class SDFGPURenderer:
             # Update existing buffers
             self.node_positions_buffer.write(node_positions.tobytes())
             self.node_colors_buffer.write(node_colors.tobytes())
+            self.node_radii_buffer.write(node_radii.tobytes())
             self.edge_indices_buffer.write(edge_indices.tobytes())
             self.edge_colors_buffer.write(edge_colors.tobytes())
         
         # Bind buffers to shader
         self.node_positions_buffer.bind_to_storage_buffer(0)
         self.node_colors_buffer.bind_to_storage_buffer(1)
+        self.node_radii_buffer.bind_to_storage_buffer(5)  # New binding for node radii
         self.edge_indices_buffer.bind_to_storage_buffer(2)
         self.edge_colors_buffer.bind_to_storage_buffer(3)
         self.output_buffer.bind_to_storage_buffer(4)
@@ -198,7 +208,7 @@ class SDFGPURenderer:
         self.program['torus_R'].value = float(torus_R)
         self.program['torus_r'].value = float(torus_r)
         self.program['shell_thickness'].value = float(shell_thickness)
-        self.program['node_radius'].value = float(node_radius)
+        # node_radius is now per-node in buffer binding 5, not a uniform
         self.program['edge_radius'].value = float(edge_radius)
         self.program['smooth_k'].value = float(smooth_k)
         self.program['hit_eps'].value = float(hit_eps)
