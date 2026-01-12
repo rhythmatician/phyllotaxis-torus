@@ -15,7 +15,6 @@ Examples:
   python torus_net_gpu.py --steps 13 21 --out out_13_21.png
   python torus_net_gpu.py --steps 34 55 --out out_34_55.png
   python torus_net_gpu.py --steps 1 13 21 --out spiral.png
-  python torus_net_gpu.py --sdf --out out_sdf.png
 """
 
 import argparse
