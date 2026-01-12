@@ -774,17 +774,21 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     # Calculate per-node z_cam (distance along camera forward direction)
     # This matches the CPU renderer's project_points function: z_cam = V · forward
     V = node_positions_np - cam_np[np.newaxis, :]  # [N, 3]
-    z_cam = np.dot(V, forward_np)  # [N] - distance along forward direction
+    z_cam = np.dot(V, forward_np)  # [N] - distance along camera forward direction
 
-    # Clamp z_cam to positive values to avoid negative/zero radii for nodes behind camera
-    # Use a minimum distance that ensures reasonable sphere sizes
-    min_z_cam = max(0.1, scene.R * 0.5)  # Minimum distance = half torus major radius
-    z_cam_clamped = np.maximum(z_cam, min_z_cam)
+    # Filter out nodes behind camera (like CPU renderer does with z_cam > 1e-6)
+    # The CPU also filters nodes whose projection falls outside screen bounds,
+    # but we don't need to do that here since the ray marcher naturally won't hit them
+    min_z_cam_threshold = 1e-6
+    valid_nodes = z_cam > min_z_cam_threshold
 
     # Apply CPU renderer's formula per node: r_world = radius_px * z_cam * aspect * 2.0 / (f * (W - 1))
-    node_radii = (scene.dot_radius_px * z_cam_clamped * aspect * 2.0) / (
+    node_radii = (scene.dot_radius_px * z_cam * aspect * 2.0) / (
         scene.f * (scene.W - 1)
     )  # [N]
+
+    # Zero out radii for invalid nodes so they don't block rays
+    node_radii = np.where(valid_nodes, node_radii, 1e-8)
 
     # Calculate world_scale for edges using a typical distance
     # For edges, we use the mean distance of the edge endpoints
