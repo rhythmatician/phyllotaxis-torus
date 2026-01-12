@@ -20,6 +20,6 @@ test_data_path = Path(__file__).parent / "data/png"
 def test_count_colored_spheres(img_path, expected_count):
     # Load the image
     img = np.array(Image.open(img_path)) / 255.0
-    
+
     result = count_colored_spheres(img)
     assert result["count"] == expected_count

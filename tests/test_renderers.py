@@ -36,23 +36,23 @@ TEST_OUTPUT_DIR.mkdir(exist_ok=True)
 def compare_images(img1: np.ndarray, img2: np.ndarray, threshold: float = 0.95):
     """
     Compare two images using SSIM (Structural Similarity Index).
-    
+
     Args:
         img1, img2: Images as numpy arrays [H, W, 3] in range [0, 1]
         threshold: Minimum SSIM score to consider images similar (default 0.95)
-    
+
     Returns:
         dict with comparison metrics
     """
     # Compute SSIM
     ssim_score = ssim(img1, img2, channel_axis=2, data_range=1.0)
-    
+
     # Compute MSE
     mse = np.mean((img1 - img2) ** 2)
-    
+
     # Compute max absolute difference
     max_diff = np.max(np.abs(img1 - img2))
-    
+
     # Count colored spheres in both images
     spheres1 = count_colored_spheres(img1)
     spheres2 = count_colored_spheres(img2)
@@ -61,8 +61,10 @@ def compare_images(img1: np.ndarray, img2: np.ndarray, threshold: float = 0.95):
 
     # Check if images are similar
     is_similar = ssim_score >= threshold
-    spheres_match = (spheres1["count"] == spheres2["count"]) and (spheres_diff["count"] == 0)
-    
+    spheres_match = (spheres1["count"] == spheres2["count"]) and (
+        spheres_diff["count"] == 0
+    )
+
     return {
         "ssim": ssim_score,
         "mse": mse,
@@ -88,21 +90,21 @@ def load_rendered_image(path: Path) -> np.ndarray:
 def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: str):
     """
     Render a test scene with specified renderer.
-    
+
     Args:
         scene: Scene configuration
         steps: Edge step sizes
         renderer: "cpu", "gpu", or "sdf-gpu"
         test_name: Name for output file
-    
+
     Returns:
         Path to rendered image
-        
+
     Raises:
         AssertionError: If GPU renderer falls back to CPU
     """
     output_path = TEST_OUTPUT_DIR / f"{test_name}_{renderer}.png"
-    
+
     if renderer == "cpu":
         render_cpu(scene, steps, str(output_path))
     elif renderer == "gpu":
@@ -111,15 +113,15 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
         render_sdf_gpu(scene, steps, str(output_path))
     else:
         raise ValueError(f"Unknown renderer: {renderer}")
-    
+
     # Load the image from png directory (where render functions save)
     png_path = Path("png") / output_path.name
-    
+
     # Verify that GPU renderer didn't fall back to CPU
     if renderer in ["gpu", "sdf-gpu"]:
         json_path = Path("json") / f"{output_path.stem}.json"
         if json_path.exists():
-            with open(json_path, 'r') as f:
+            with open(json_path, "r") as f:
                 metadata = json.load(f)
                 actual_renderer = metadata.get("renderer", "unknown")
                 # CPU renderer doesn't set a "renderer" field, or sets it differently
@@ -131,13 +133,14 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
                     raise AssertionError(
                         f"GPU renderer fell back to CPU! Check OpenGL initialization."
                     )
-    
+
     return png_path
 
 
 # ============================================================================
 # Phase 1: Basic Geometry Tests
 # ============================================================================
+
 
 def test_single_node():
     """Test 1: Render a single node (N=1) with CPU and GPU."""
@@ -153,13 +156,13 @@ def test_single_node():
         line_radius_px=1,
         line_alpha=0.4,
     )
-    
+
     steps = []  # No edges
-    
+
     # Render with both
     cpu_path = render_test_scene(scene, steps, "cpu", "test1_single_node")
     gpu_path = render_test_scene(scene, steps, "sdf-gpu", "test1_single_node")
-    
+
     # Load images
     cpu_img = load_rendered_image(cpu_path)
     gpu_img = load_rendered_image(gpu_path)
@@ -167,10 +170,10 @@ def test_single_node():
     # Print filenames for debugging
     print(f"CPU Image Path: {cpu_path}")
     print(f"GPU Image Path: {gpu_path}")
-    
+
     # Compare
     metrics = compare_images(cpu_img, gpu_img, threshold=0.99)
-    
+
     print(f"\n[Test 1: Single Node]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
     print(f"  MSE: {metrics['mse']:.6f}")
@@ -195,8 +198,8 @@ def test_single_node():
     plt.tight_layout()
     plt.savefig(TEST_OUTPUT_DIR / "test1_comparison.png", dpi=100)
     plt.close()
-    
-    assert metrics['is_similar'], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
+
+    assert metrics["is_similar"], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
 
 
 def test_few_nodes():
@@ -213,20 +216,22 @@ def test_few_nodes():
         line_radius_px=1,
         line_alpha=0.4,
     )
-    
+
     steps = []  # No edges yet
-    
+
     # Render with both
     cpu_path = render_test_scene(scene, steps, "cpu", "test2_few_nodes")
     gpu_path = render_test_scene(scene, steps, "sdf-gpu", "test2_few_nodes")
-    
+
     # Load images
     cpu_img = load_rendered_image(cpu_path)
     gpu_img = load_rendered_image(gpu_path)
-    
+
     # Compare
-    metrics = compare_images(cpu_img, gpu_img, threshold=0.999)  # Was passing at 0.99 even though visually different
-    
+    metrics = compare_images(
+        cpu_img, gpu_img, threshold=0.999
+    )  # Was passing at 0.99 even though visually different
+
     print(f"\n[Test 2: Few Nodes (N=13)]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
     print(f"  MSE: {metrics['mse']:.6f}")
@@ -235,7 +240,7 @@ def test_few_nodes():
     print(f"  CPU Spheres: {metrics['spheres_count_1']}")
     print(f"  GPU Spheres: {metrics['spheres_count_2']}")
     print(f"  Spheres Match: {metrics['spheres_match']}")
-    
+
     # Save comparison
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     axes[0].imshow(cpu_img)
@@ -251,8 +256,8 @@ def test_few_nodes():
     plt.tight_layout()
     plt.savefig(TEST_OUTPUT_DIR / "test2_comparison.png", dpi=100)
     plt.close()
-    
-    assert metrics['is_similar'], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
+
+    assert metrics["is_similar"], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
 
 
 def test_medium_nodes():
@@ -269,31 +274,31 @@ def test_medium_nodes():
         line_radius_px=1,
         line_alpha=0.4,
     )
-    
+
     steps = []  # No edges yet
-    
+
     # Render with both
     cpu_path = render_test_scene(scene, steps, "cpu", "test3_medium_nodes")
     gpu_path = render_test_scene(scene, steps, "sdf-gpu", "test3_medium_nodes")
-    
+
     # Load images
     cpu_img = load_rendered_image(cpu_path)
     gpu_img = load_rendered_image(gpu_path)
-    
+
     # Compare
     metrics = compare_images(cpu_img, gpu_img, threshold=0.999)
-    
+
     print(f"\n[Test 3: Medium Nodes (N=89)]")
     print(f"  SSIM: {metrics['ssim']:.4f}")
     print(f"  MSE: {metrics['mse']:.6f}")
     print(f"  Max Diff: {metrics['max_diff']:.6f}")
     print(f"  Similar: {metrics['is_similar']}")
-    
+
     # Count colored spheres
     print(f"  CPU Spheres: {metrics['spheres_count_1']}")
     print(f"  GPU Spheres: {metrics['spheres_count_2']}")
     print(f"  Spheres Match: {metrics['spheres_match']}")
-    
+
     # Save comparison
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     axes[0].imshow(cpu_img)
@@ -309,13 +314,14 @@ def test_medium_nodes():
     plt.tight_layout()
     plt.savefig(TEST_OUTPUT_DIR / "test3_comparison.png", dpi=100)
     plt.close()
-    
-    assert metrics['is_similar'], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
+
+    assert metrics["is_similar"], f"Images differ too much: SSIM={metrics['ssim']:.4f}"
 
 
 # ============================================================================
 # Phase 2: Line Tests (TODO - implement after nodes work)
 # ============================================================================
+
 
 @pytest.mark.skip(reason="Lines not yet working in GPU renderer")
 def test_single_edge():
@@ -337,7 +343,7 @@ if __name__ == "__main__":
     print("=" * 80)
     print("GPU vs CPU Renderer Comparison Tests")
     print("=" * 80)
-    
+
     # Run tests individually (not using pytest)
     try:
         test_single_node()
@@ -346,7 +352,7 @@ if __name__ == "__main__":
         print(f"✗ Test 1 failed: {e}")
     except Exception as e:
         print(f"✗ Test 1 error: {e}")
-    
+
     try:
         test_few_nodes()
         print("✓ Test 2 passed")
@@ -354,7 +360,7 @@ if __name__ == "__main__":
         print(f"✗ Test 2 failed: {e}")
     except Exception as e:
         print(f"✗ Test 2 error: {e}")
-    
+
     try:
         test_medium_nodes()
         print("✓ Test 3 passed")
@@ -362,7 +368,7 @@ if __name__ == "__main__":
         print(f"✗ Test 3 failed: {e}")
     except Exception as e:
         print(f"✗ Test 3 error: {e}")
-    
+
     print("\n" + "=" * 80)
     print("Test results saved to:", TEST_OUTPUT_DIR)
     print("=" * 80)
