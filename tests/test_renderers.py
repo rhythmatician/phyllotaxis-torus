@@ -55,10 +55,11 @@ def compare_images(img1: np.ndarray, img2: np.ndarray, threshold: float = 0.95):
     # Compute max absolute difference
     max_diff = np.max(np.abs(img1 - img2))
     
-    # Count colored spheres in all three images
+    # Count colored spheres in both images
     spheres1 = count_colored_spheres(img1)
     spheres2 = count_colored_spheres(img2)
-    spheres_diff = count_colored_spheres(img1 - img2)
+    diff_img = np.abs(img1 - img2)
+    spheres_diff = count_colored_spheres(diff_img)
 
     # Check if images are similar
     is_similar = ssim_score >= threshold
