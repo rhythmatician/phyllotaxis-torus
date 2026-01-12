@@ -14,6 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
 from count_colored_spheres import count_colored_spheres
+import os
 
 # Add parent directory to path to import torus_net_gpu
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -87,41 +88,37 @@ def load_rendered_image(path: Path) -> np.ndarray:
 
 
 def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: str):
-    """
-    Render a test scene with specified renderer.
-
-    Args:
-        scene: Scene configuration
-        steps: Edge step sizes
-        renderer: "cpu", "gpu", or "sdf-gpu"
-        test_name: Name for output file
-
-    Returns:
-        Path to rendered image
-
-    Raises:
-        AssertionError: If GPU renderer falls back to CPU
-    """
     output_path = TEST_OUTPUT_DIR / f"{test_name}_{renderer}.png"
 
+    # Load path in png directory (where render functions save)
+    png_path = Path("png") / output_path.name
+
+    # CPU cache: reuse existing rendered image unless forced
     if renderer == "cpu":
+        force = os.getenv("FORCE_CPU_RENDER", "").strip() not in (
+            "",
+            "0",
+            "false",
+            "False",
+        )
+        if png_path.exists() and not force:
+            return png_path
+
         render_cpu(scene, steps, str(output_path))
-    elif renderer == "gpu":
+        return png_path
+
+    if renderer == "gpu":
         render_uv_gpu(scene, steps, str(output_path))
     else:
         raise ValueError(f"Unknown renderer: {renderer}")
 
-    # Load the image from png directory (where render functions save)
-    png_path = Path("png") / output_path.name
-
-    # Verify that GPU renderer didn't fall back to CPU
+    # Verify that GPU renderer didn't fall back to CPU (unchanged)
     if renderer == "gpu":
         json_path = Path("json") / f"{output_path.stem}.json"
         if json_path.exists():
             with open(json_path, "r") as f:
                 metadata = json.load(f)
                 actual_renderer = metadata.get("renderer", "unknown")
-                # CPU renderer doesn't set a "renderer" field, or sets it differently
                 if "UV-GPU" not in actual_renderer:
                     raise AssertionError(
                         "UV-GPU renderer fell back to CPU! Check shader compilation errors."
@@ -264,42 +261,3 @@ def test_single_edge():
 def test_few_edges():
     """Test 5: Render simple network (N=13, step=5)."""
     pass
-
-
-# ============================================================================
-# Main
-# ============================================================================
-
-if __name__ == "__main__":
-    print("=" * 80)
-    print("GPU vs CPU Renderer Comparison Tests")
-    print("=" * 80)
-
-    # Run tests individually (not using pytest)
-    try:
-        test_single_node()
-        print("✓ Test 1 passed")
-    except AssertionError as e:
-        print(f"✗ Test 1 failed: {e}")
-    except Exception as e:
-        print(f"✗ Test 1 error: {e}")
-
-    try:
-        test_few_nodes()
-        print("✓ Test 2 passed")
-    except AssertionError as e:
-        print(f"✗ Test 2 failed: {e}")
-    except Exception as e:
-        print(f"✗ Test 2 error: {e}")
-
-    try:
-        test_medium_nodes()
-        print("✓ Test 3 passed")
-    except AssertionError as e:
-        print(f"✗ Test 3 failed: {e}")
-    except Exception as e:
-        print(f"✗ Test 3 error: {e}")
-
-    print("\n" + "=" * 80)
-    print("Test results saved to:", TEST_OUTPUT_DIR)
-    print("=" * 80)
