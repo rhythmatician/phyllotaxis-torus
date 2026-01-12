@@ -43,7 +43,7 @@ def compare_images(img1: np.ndarray, img2: np.ndarray, threshold: float = 0.95):
         dict with comparison metrics
     """
     # Compute SSIM
-    ssim_score = ssim(img1, img2, channel_axis=2, data_range=1.0)
+    ssim_score: float = ssim(img1, img2, channel_axis=2, data_range=1.0)  # type: ignore
 
     # Compute MSE
     mse = np.mean((img1 - img2) ** 2)
@@ -71,6 +71,7 @@ def compare_images(img1: np.ndarray, img2: np.ndarray, threshold: float = 0.95):
         "threshold": threshold,
         "spheres_count_1": spheres1["count"],
         "spheres_count_2": spheres2["count"],
+        "spheres_count_diff": spheres_diff["count"],
         "spheres_match": spheres_match,
         "region_sizes_1": spheres1["region_sizes"],
         "region_sizes_2": spheres2["region_sizes"],
@@ -173,10 +174,11 @@ def test_single_node():
     print(f"  Similar: {metrics['is_similar']}")
     print(f"  CPU Spheres: {metrics['spheres_count_1']}")
     print(f"  GPU Spheres: {metrics['spheres_count_2']}")
+    print(f"  Diff Spheres: {metrics['spheres_count_diff']}")
     print(f"  Spheres Match: {metrics['spheres_match']}")
 
     # Save comparison
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    _, axes = plt.subplots(1, 3, figsize=(15, 5))
     axes[0].imshow(cpu_img)
     axes[0].set_title("CPU")
     axes[0].axis("off")
@@ -231,10 +233,11 @@ def test_few_nodes():
     print(f"  Similar: {metrics['is_similar']}")
     print(f"  CPU Spheres: {metrics['spheres_count_1']}")
     print(f"  GPU Spheres: {metrics['spheres_count_2']}")
+    print(f"  Diff Spheres: {metrics['spheres_count_diff']}")
     print(f"  Spheres Match: {metrics['spheres_match']}")
 
     # Save comparison
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    _, axes = plt.subplots(1, 3, figsize=(15, 5))
     axes[0].imshow(cpu_img)
     axes[0].set_title("CPU")
     axes[0].axis("off")
@@ -289,10 +292,11 @@ def test_medium_nodes():
     # Count colored spheres
     print(f"  CPU Spheres: {metrics['spheres_count_1']}")
     print(f"  GPU Spheres: {metrics['spheres_count_2']}")
+    print(f"  Diff Spheres: {metrics['spheres_count_diff']}")
     print(f"  Spheres Match: {metrics['spheres_match']}")
 
     # Save comparison
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    _, axes = plt.subplots(1, 3, figsize=(15, 5))
     axes[0].imshow(cpu_img)
     axes[0].set_title("CPU")
     axes[0].axis("off")
