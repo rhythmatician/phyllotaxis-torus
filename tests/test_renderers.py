@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from torus_net_gpu import (  # noqa: E402
     render_cpu,
-    render_sdf_gpu,
+    render_uv_gpu,
     Scene,
 )
 
@@ -106,8 +106,8 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
 
     if renderer == "cpu":
         render_cpu(scene, steps, str(output_path))
-    elif renderer in ["gpu", "sdf-gpu"]:
-        render_sdf_gpu(scene, steps, str(output_path))
+    elif renderer == "gpu":
+        render_uv_gpu(scene, steps, str(output_path))
     else:
         raise ValueError(f"Unknown renderer: {renderer}")
 
@@ -115,16 +115,16 @@ def render_test_scene(scene: Scene, steps: list[int], renderer: str, test_name: 
     png_path = Path("png") / output_path.name
 
     # Verify that GPU renderer didn't fall back to CPU
-    if renderer in ["gpu", "sdf-gpu"]:
+    if renderer == "gpu":
         json_path = Path("json") / f"{output_path.stem}.json"
         if json_path.exists():
             with open(json_path, "r") as f:
                 metadata = json.load(f)
                 actual_renderer = metadata.get("renderer", "unknown")
                 # CPU renderer doesn't set a "renderer" field, or sets it differently
-                if "SDF-GPU" not in actual_renderer:
+                if "UV-GPU" not in actual_renderer:
                     raise AssertionError(
-                        "SDF-GPU renderer fell back to CPU! Check shader compilation errors."
+                        "UV-GPU renderer fell back to CPU! Check shader compilation errors."
                     )
 
     return png_path
@@ -154,7 +154,7 @@ def test_single_node():
 
     # Render with both
     cpu_path = render_test_scene(scene, steps, "cpu", "test1_single_node")
-    gpu_path = render_test_scene(scene, steps, "sdf-gpu", "test1_single_node")
+    gpu_path = render_test_scene(scene, steps, "gpu", "test1_single_node")
 
     # Load images
     cpu_img = load_rendered_image(cpu_path)
@@ -215,7 +215,7 @@ def test_few_nodes():
 
     # Render with both
     cpu_path = render_test_scene(scene, steps, "cpu", "test2_few_nodes")
-    gpu_path = render_test_scene(scene, steps, "sdf-gpu", "test2_few_nodes")
+    gpu_path = render_test_scene(scene, steps, "gpu", "test2_few_nodes")
 
     # Load images
     cpu_img = load_rendered_image(cpu_path)
@@ -274,7 +274,7 @@ def test_medium_nodes():
 
     # Render with both
     cpu_path = render_test_scene(scene, steps, "cpu", "test3_medium_nodes")
-    gpu_path = render_test_scene(scene, steps, "sdf-gpu", "test3_medium_nodes")
+    gpu_path = render_test_scene(scene, steps, "gpu", "test3_medium_nodes")
 
     # Load images
     cpu_img = load_rendered_image(cpu_path)

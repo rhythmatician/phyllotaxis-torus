@@ -78,11 +78,11 @@ class UVGPURenderer:
         )
 
         # Buffers (will be populated later)
-        self.node_uv_buffer: moderngl.Buffer
-        self.node_radii_buffer: moderngl.Buffer
-        self.edge_uv_buffer: moderngl.Buffer
-        self.edge_radii_buffer: moderngl.Buffer
-        self.output_buffer: moderngl.Buffer
+        self.node_uv_buffer: Optional[moderngl.Buffer] = None
+        self.node_radii_buffer: Optional[moderngl.Buffer] = None
+        self.edge_uv_buffer: Optional[moderngl.Buffer] = None
+        self.edge_radii_buffer: Optional[moderngl.Buffer] = None
+        self.output_buffer: Optional[moderngl.Buffer] = None
         # Current scene parameters
         self.num_nodes = 0
         self.num_edges = 0
@@ -175,7 +175,11 @@ class UVGPURenderer:
         if self.edge_uv_buffer is None or self.edge_uv_buffer.size != edge_uv.nbytes:
             if self.edge_uv_buffer is not None:
                 self.edge_uv_buffer.release()
-            self.edge_uv_buffer = self.ctx.buffer(edge_uv.tobytes())
+            # Create buffer with at least 4 bytes (ModernGL requires non-empty buffers)
+            edge_uv_bytes = edge_uv.tobytes()
+            if len(edge_uv_bytes) == 0:
+                edge_uv_bytes = np.zeros(4, dtype=np.float32).tobytes()
+            self.edge_uv_buffer = self.ctx.buffer(edge_uv_bytes)
         else:
             self.edge_uv_buffer.write(edge_uv.tobytes())
 
@@ -185,7 +189,11 @@ class UVGPURenderer:
         ):
             if self.edge_radii_buffer is not None:
                 self.edge_radii_buffer.release()
-            self.edge_radii_buffer = self.ctx.buffer(edge_radii_uv.tobytes())
+            # Create buffer with at least 4 bytes (ModernGL requires non-empty buffers)
+            edge_radii_bytes = edge_radii_uv.tobytes()
+            if len(edge_radii_bytes) == 0:
+                edge_radii_bytes = np.zeros(1, dtype=np.float32).tobytes()
+            self.edge_radii_buffer = self.ctx.buffer(edge_radii_bytes)
         else:
             self.edge_radii_buffer.write(edge_radii_uv.tobytes())
 
@@ -206,10 +214,8 @@ class UVGPURenderer:
 
         # Set uniforms for Pass A - Stage 3 (finalize)
         self.ink_finalize_program["numNodes"] = self.num_nodes
-        self.ink_finalize_program["numEdges"] = self.num_edges
         self.ink_finalize_program["torusR"] = torus_R
         self.ink_finalize_program["torusr"] = torus_r
-        self.ink_finalize_program["smoothK"] = smooth_k
         self.ink_finalize_program["texWidth"] = self.uv_texture_size
         self.ink_finalize_program["texHeight"] = self.uv_texture_size
 
@@ -264,6 +270,10 @@ class UVGPURenderer:
         # ===== PASS A - STAGE 1: Seed Primitives =====
 
         # Bind buffers
+        assert self.node_uv_buffer is not None
+        assert self.node_radii_buffer is not None
+        assert self.edge_uv_buffer is not None
+        assert self.edge_radii_buffer is not None
         self.node_uv_buffer.bind_to_storage_buffer(1)
         self.node_radii_buffer.bind_to_storage_buffer(2)
         self.edge_uv_buffer.bind_to_storage_buffer(3)
@@ -350,6 +360,7 @@ class UVGPURenderer:
         self.ctx.memory_barrier(moderngl.SHADER_IMAGE_ACCESS_BARRIER_BIT)
 
         # Read back result
+        assert self.output_buffer is not None
         self.output_texture.read_into(self.output_buffer)
 
         # Convert to numpy array and reshape
