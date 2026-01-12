@@ -48,6 +48,7 @@ class SDFGPURenderer:
         self.edge_colors_buffer: Optional[moderngl.Buffer] = None
         self.output_buffer: Optional[moderngl.Buffer] = None
         self.ray_dirs_buffer: Optional[moderngl.Buffer] = None
+        self.depth_buffer: Optional[moderngl.Buffer] = None
 
         # Current scene parameters
         self.num_nodes = 0
@@ -65,10 +66,14 @@ class SDFGPURenderer:
     def _compile_shader(self) -> moderngl.ComputeShader:
         """Load and compile the SDF compute shader."""
         shader_path = Path(__file__).parent.parent / "shaders" / "raymarch_sdf.comp"
+        print(f"[DEBUG] Loading shader from: {shader_path}")
+        print(f"[DEBUG] File exists: {shader_path.exists()}")
 
         try:
             with open(shader_path, "r") as f:
                 shader_source = f.read()
+                print(f"[DEBUG] Shader source length: {len(shader_source)} bytes")
+                print(f"[DEBUG] First 100 chars: {shader_source[:100]}")
         except FileNotFoundError:
             raise RuntimeError(f"Compute shader not found at {shader_path}")
 
@@ -105,7 +110,8 @@ class SDFGPURenderer:
         diffuse_strength: float,
         specular_strength: float,
         shininess: float,
-        ray_dirs: Optional[np.ndarray] = None,  # [H*W, 3] flattened (y-major)
+        ray_dirs: Optional[np.ndarray] = None,  # [H*W, 4] ray directions
+        depth_buffer: Optional[np.ndarray] = None,  # [H, W] CPU depth buffer
     ):
         """
         Upload scene data and parameters to GPU.
@@ -215,6 +221,22 @@ class SDFGPURenderer:
                 ray_dirs = np.asarray(ray_dirs, dtype=np.float32).reshape(-1, 4)
                 self.ray_dirs_buffer.write(ray_dirs.tobytes())
 
+        # Handle depth buffer
+        if depth_buffer is not None:
+            depth_buffer = np.asarray(depth_buffer, dtype=np.float32).reshape(-1)
+            if (
+                self.depth_buffer is None
+                or self.depth_buffer.size != depth_buffer.nbytes
+            ):
+                if self.depth_buffer is not None:
+                    self.depth_buffer.release()
+                self.depth_buffer = self.ctx.buffer(depth_buffer.tobytes())
+            else:
+                self.depth_buffer.write(depth_buffer.tobytes())
+        elif self.depth_buffer is None:
+            dummy_depth = np.array([1e20], dtype=np.float32)
+            self.depth_buffer = self.ctx.buffer(dummy_depth.tobytes())
+
         # Bind buffers to shader (guaranteed to exist after recreate_buffers check)
         assert self.node_positions_buffer is not None
         assert self.node_colors_buffer is not None
@@ -230,10 +252,15 @@ class SDFGPURenderer:
         self.edge_colors_buffer.bind_to_storage_buffer(3)
         self.output_buffer.bind_to_storage_buffer(4)
         self.ray_dirs_buffer.bind_to_storage_buffer(6)
+        assert self.depth_buffer is not None
+        self.depth_buffer.bind_to_storage_buffer(7)
 
         # Set uniforms
         self.program["numNodes"].value = int(self.num_nodes)
         self.program["numEdges"].value = int(self.num_edges)
+        print(
+            f"[GPU Renderer] Set numNodes={self.num_nodes}, numEdges={self.num_edges}"
+        )
         self.program["torus_R"].value = float(torus_R)
         self.program["torus_r"].value = float(torus_r)
         self.program["shell_thickness"].value = float(shell_thickness)
@@ -254,6 +281,12 @@ class SDFGPURenderer:
         self.program["width"].value = int(self.width)
         self.program["height"].value = int(self.height)
         self.program["use_ray_buffer"].value = int(1 if ray_dirs is not None else 0)
+        self.program["use_depth_buffer"].value = int(
+            1 if depth_buffer is not None else 0
+        )
+        print(
+            f"[GPU Renderer] use_depth_buffer={(1 if depth_buffer is not None else 0)}"
+        )
 
         self.program["light_dir"].value = tuple(light_dir.astype(np.float32))
         self.program["ambient"].value = float(ambient)

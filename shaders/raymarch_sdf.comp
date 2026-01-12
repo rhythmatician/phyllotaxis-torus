@@ -1,4 +1,5 @@
 #version 430
+SYNTAX_ERROR_HERE_TO_TEST_CACHE
 
 // Work group size
 layout(local_size_x = 8, local_size_y = 8) in;
@@ -24,6 +25,7 @@ uniform float focal_length;
 uniform int width;
 uniform int height;
 uniform int use_ray_buffer;
+uniform int use_depth_buffer;
 uniform vec3 light_dir;
 uniform float ambient;
 uniform float diffuse_strength;
@@ -58,6 +60,11 @@ layout(std430, binding = 4) buffer OutputImage {
 // Optional ray directions buffer (precomputed on CPU)
 layout(std430, binding = 6) buffer RayDirs {
     vec4 ray_dirs[];
+};
+
+// Optional depth buffer (precomputed on CPU)
+layout(std430, binding = 7) buffer DepthBuffer {
+    float depth_values[];
 };
 
 // ============================================================================
@@ -365,15 +372,26 @@ void main() {
 
     vec3 ray_origin = camera_pos;
 
-    // Pass 1: march to torus surface only to get occlusion depth
-    float t_torus = 0.0;
-    bool torus_hit = false;
-    for (int step = 0; step < max_steps; step++) {
-        vec3 pos = ray_origin + t_torus * ray_dir;
-        float d = abs(torus_sdf(pos, torus_R, torus_r));
-        if (d < hit_eps) { torus_hit = true; break; }
-        t_torus += max(d, hit_eps * 0.5);
-        if (t_torus > t_max) break;
+    // Pass 1: Get torus occlusion depth
+    float t_torus;
+    bool torus_hit;
+    
+    if (use_depth_buffer == 1) {
+        // Use CPU-computed depth buffer for exact parity
+        int pix_index = pixel.y * width + pixel.x;
+        t_torus = depth_values[pix_index];
+        torus_hit = (!isinf(t_torus) && !isnan(t_torus));
+    } else {
+        // March to torus surface to get occlusion depth
+        t_torus = 0.0;
+        torus_hit = false;
+        for (int step = 0; step < max_steps; step++) {
+            vec3 pos = ray_origin + t_torus * ray_dir;
+            float d = abs(torus_sdf(pos, torus_R, torus_r));
+            if (d < hit_eps) { torus_hit = true; break; }
+            t_torus += d;  // Use exact distance, no minimum step
+            if (t_torus > t_max) break;
+        }
     }
 
     // Pass 2: analytic ray–sphere intersections for all nodes
@@ -416,38 +434,8 @@ void main() {
     vec4 color;
 
     if (hit_ink) {
-        // Hit ink (node or edge) - apply shading
-        vec4 base_color = get_hit_color(hit_type, hit_idx);
-
-        // Compute normal at hit point
-        vec3 normal;
-        if (hit_type == 0) {
-            // Analytical normal for sphere: radial from center
-            vec3 center = node_positions[hit_idx];
-            normal = normalize(hit_pos - center);
-        } else {
-            // Fallback to gradient-based normal for edges
-            normal = estimate_normal(hit_pos, hit_eps * 2.0);
-        }
-
-        // Compute view direction (from hit point toward camera)
-        vec3 view_dir_unnorm = camera_pos - hit_pos;
-        float view_len = length(view_dir_unnorm);
-        vec3 view_dir = view_dir_unnorm / max(view_len, 1e-6);
-
-        // Apply Phong shading
-        vec3 shaded_color = phong_shade(
-            base_color.rgb,
-            normal,
-            view_dir,
-            light_dir,
-            ambient,
-            diffuse_strength,
-            specular_strength,
-            shininess
-        );
-
-        color = vec4(shaded_color, base_color.a);
+        // DEBUG: Solid white for any sphere
+        color = vec4(1.0, 1.0, 1.0, 1.0);
     } else if (hit_torus) {
         // Hit torus surface - render as black (the torus shell)
         color = vec4(0.0, 0.0, 0.0, 1.0);

@@ -205,16 +205,19 @@ def torus_phyllotaxis_uv(
 def build_rays(scene: Scene, device, right, up, forward) -> torch.Tensor:
     """
     Returns D[y,x,3] normalized ray directions.
+    Uses (W-1) and (H-1) convention to match project_points pixel grid.
     """
     W, H = scene.W, scene.H
     aspect = W / H
 
-    xs = (torch.arange(W, device=device, dtype=torch.float32) + 0.5) / W * 2.0 - 1.0
-    ys = 1.0 - (torch.arange(H, device=device, dtype=torch.float32) + 0.5) / H * 2.0
+    # Map pixel centers to [-1, 1] using (W-1) convention to match project_points
+    xs = (
+        torch.arange(W, device=device, dtype=torch.float32) / (W - 1) * 2.0 - 1.0
+    ) * aspect
+    ys = 1.0 - (torch.arange(H, device=device, dtype=torch.float32) / (H - 1) * 2.0)
 
     # [H,W]
     y_img, x_img = torch.meshgrid(ys, xs, indexing="ij")
-    x_img = x_img * aspect
 
     dx = x_img / scene.f
     dy = y_img / scene.f
@@ -333,6 +336,11 @@ def splat_spheres(
         )
 
     valid, z_cam, px, py = project_points(centers, C, right, up, forward, scene.f, W, H)
+
+    if centers.numel() > 0:
+        print(
+            f"[CPU splat] Processing {len(centers)} centers, {valid.sum().item()} valid after projection"
+        )
 
     centers = centers[valid]
     colors = colors[valid]
@@ -713,8 +721,17 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     # Build camera
     cam_np, right_np, up_np, forward_np = build_camera(scene)
 
-    # Generate phyllotaxis points on CPU
+    # Compute CPU depth buffer for GPU to use (ensures perfect occlusion parity)
     device = torch.device("cpu")
+    C = torch.tensor(cam_np, device=device, dtype=torch.float32)
+    right_t = torch.tensor(right_np, device=device, dtype=torch.float32)
+    up_t = torch.tensor(up_np, device=device, dtype=torch.float32)
+    fwd_t = torch.tensor(forward_np, device=device, dtype=torch.float32)
+    D_cpu = build_rays(scene, device, right_t, up_t, fwd_t)
+    depth_t_cpu = render_depth_t(scene, device, C, D_cpu)  # [H, W]
+    depth_t_np = depth_t_cpu.numpy().astype(np.float32)
+
+    # Generate phyllotaxis points on CPU
     u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device)
     P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
 
@@ -826,6 +843,10 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     print(f"[SDF-GPU] Camera: pos={cam_np}, forward={forward_np}")
     print(f"[SDF-GPU] First 3 nodes: {node_positions_np[:3]}")
     print(f"[SDF-GPU] First 3 radii: {node_radii[:3]}")
+    print(f"[SDF-GPU] First 3 colors: {node_colors_rgba[:3, :3]}")  # RGB only
+    print(
+        f"[SDF-GPU] Total nodes before filter: {len(P)}, after filter: {len(node_positions_np)}"
+    )
 
     # Build per-pixel ray directions to ensure parity with CPU
     D_cpu = build_rays(
@@ -835,6 +856,45 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
     # Pad to vec4 for std430 16-byte alignment
     zeros = np.zeros((ray_dirs_np3.shape[0], 1), dtype=np.float32)
     ray_dirs_np = np.concatenate([ray_dirs_np3, zeros], axis=1)
+
+    print(
+        f"[SDF-GPU] Ray dirs shape: {ray_dirs_np.shape}, depth shape: {depth_t_np.shape}"
+    )
+    print(
+        f"[SDF-GPU] Depth stats: min={depth_t_np.min():.3f}, max={depth_t_np.max():.3f}, finite={np.isfinite(depth_t_np).sum()}/{depth_t_np.size}"
+    )
+    # Sample depth values at key locations
+    center_y, center_x = scene.H // 2, scene.W // 2
+    print(
+        f"[SDF-GPU] Sample depths: center={depth_t_np[center_y, center_x]:.3f}, [100,100]={depth_t_np[100, 100]:.3f}, [200,200]={depth_t_np[200, 200]:.3f}"
+    )
+
+    # Debug: compute distances from camera to each uploaded sphere
+    print(f"[SDF-GPU] Analyzing {len(node_positions_np)} uploaded nodes:")
+    for i in range(len(node_positions_np)):
+        pos = node_positions_np[i]
+        dist_from_cam = np.linalg.norm(pos - cam_np)
+        # Compute actual ray parameter t (distance along forward ray)
+        L = pos - cam_np
+        t_along_forward = np.dot(
+            L, forward_np
+        )  # Ray parameter along camera forward direction
+        # Project to pixel coordinates to see where it appears
+        pos_t = torch.tensor(pos, dtype=torch.float32)
+        C_t = torch.tensor(cam_np, dtype=torch.float32)
+        valid_proj, z_proj, px_proj, py_proj = project_points(
+            pos_t.unsqueeze(0), C_t, right_t, up_t, fwd_t, scene.f, scene.W, scene.H
+        )
+        px, py = int(px_proj[0].item()), int(py_proj[0].item())
+        depth_at_proj = (
+            depth_t_np[py, px]
+            if 0 <= py < scene.H and 0 <= px < scene.W
+            else float("inf")
+        )
+        visible = t_along_forward <= depth_at_proj + scene.eps_t
+        print(
+            f"  Node {i}: t={t_along_forward:.3f}, projects to [{py:3d},{px:3d}], depth_there={depth_at_proj:.3f}, visible={visible}"
+        )
 
     try:
         gpu_renderer.upload_scene(
@@ -863,6 +923,7 @@ def render_sdf_gpu(scene: Scene, steps: list[int], out_path: str):
             specular_strength=scene.specular_strength,
             shininess=scene.shininess,
             ray_dirs=ray_dirs_np,
+            depth_buffer=depth_t_np,  # Pass CPU depth for perfect occlusion parity
         )
 
         # Render
@@ -1268,7 +1329,7 @@ if __name__ == "__main__":
         smooth_k=args.smooth_k,
     )
 
-    # Choose renderer based on flags
+    # Choose renderer based on flags  - 2 renders max! one for CPU, and one for GPU (with smoothing)
     if args.uv:
         print("[mode] UV-GPU rendering (OpenGL two-pass UV-texture-based)")
         render_uv_gpu(
