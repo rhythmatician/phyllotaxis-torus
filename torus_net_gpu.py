@@ -757,34 +757,6 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     # Convert line_radii and dot_radii to world space
     # Derive world_scale from scene parameters when available, otherwise fall back
     # to the previous heuristic value.
-    focal_length = getattr(scene, "focal_length", None)
-    camera_distance = getattr(scene, "camera_distance", None)
-    if (
-        isinstance(focal_length, (int, float))
-        and isinstance(camera_distance, (int, float))
-        and focal_length > 0
-        and camera_distance > 0
-    ):
-        # Similar triangles: radius_world / camera_distance ≈ radius_image / focal_length
-        # => world units per "pixel" ≈ camera_distance / focal_length
-        world_scale = camera_distance / focal_length
-    else:
-        # Fallback to the original heuristic if scene parameters are unavailable
-        world_scale = 0.02
-    focal_length = getattr(scene, "focal_length", None)
-    camera_distance = getattr(scene, "camera_distance", None)
-    if (
-        isinstance(focal_length, (int, float))
-        and isinstance(camera_distance, (int, float))
-        and focal_length > 0
-        and camera_distance > 0
-    ):
-        # Similar triangles: radius_world / camera_distance ≈ radius_image / focal_length
-        # => world units per "pixel" ≈ camera_distance / focal_length
-        world_scale = camera_distance / focal_length
-    else:
-        # Fallback to the original heuristic if scene parameters are unavailable
-        world_scale = 0.02
     # Heuristic for world_scale:
     # --------------------------
     # `world_scale` represents "approximate world units per screen pixel at
@@ -801,6 +773,19 @@ def render_gpu(scene: Scene, steps: list[int], out_path: str):
     # existing behavior.
     world_scale_default = 0.02
     world_scale = getattr(scene, "world_scale", world_scale_default)
+    
+    # Alternative: derive from scene focal length and camera distance if available
+    focal_length = getattr(scene, "focal_length", None)
+    camera_distance = getattr(scene, "camera_distance", None)
+    if (
+        isinstance(focal_length, (int, float))
+        and isinstance(camera_distance, (int, float))
+        and focal_length > 0
+        and camera_distance > 0
+    ):
+        # Similar triangles: radius_world / camera_distance ≈ radius_image / focal_length
+        # => world units per "pixel" ≈ camera_distance / focal_length
+        world_scale = camera_distance / focal_length
     
     line_world_radii = pixel_radii_to_world(line_radii, len(line_pts), world_scale, device)
     dot_world_radii = pixel_radii_to_world(dot_radii, len(P), world_scale, device)
@@ -1162,13 +1147,6 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
     device = torch.device("cpu")
     u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device)
     P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
-    
-    # Colors (pingpong colormap, seam-free)
-    lut = build_lut(device, scene.cmap_name, 256)
-    t_raw = (v % (2.0 * math.pi)) / (2.0 * math.pi)
-    t_pp = pingpong01(t_raw)
-    cidx = torch.clamp((t_pp * 255.0).to(torch.int64), 0, 255)
-    node_cols = lut[cidx]  # [N,3]
     
     # Convert u, v to numpy in [-PI, PI] range (they already are)
     node_uv_np = torch.stack([u, v], dim=-1).numpy()  # [N, 2]

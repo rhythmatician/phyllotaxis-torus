@@ -54,6 +54,9 @@ class UVGPURenderer:
             components=1,
             dtype='f4'
         )
+        # Set wrapping mode to REPEAT for toroidal topology (no seams at 0/1 boundary)
+        self.ink_sdf_texture.repeat_x = True
+        self.ink_sdf_texture.repeat_y = True
         
         # Create output image texture (RGBA32F)
         self.output_texture = self.ctx.texture(
@@ -297,18 +300,27 @@ class UVGPURenderer:
             self.output_buffer.release()
             self.output_buffer = None
         
-        # Release textures
-        if self.ink_sdf_texture is not None:
-            self.ink_sdf_texture.release()
+        # Release textures (even if ctx fails)
+        try:
+            if self.ink_sdf_texture is not None:
+                self.ink_sdf_texture.release()
+                self.ink_sdf_texture = None
+        except Exception:
             self.ink_sdf_texture = None
         
-        if self.output_texture is not None:
-            self.output_texture.release()
+        try:
+            if self.output_texture is not None:
+                self.output_texture.release()
+                self.output_texture = None
+        except Exception:
             self.output_texture = None
         
         # Release context
         if self.ctx is not None:
-            self.ctx.release()
+            try:
+                self.ctx.release()
+            except Exception:
+                pass
             self.ctx = None
 
 
@@ -321,9 +333,7 @@ def test_uv_gpu_availability() -> Tuple[bool, Optional[str]]:
     """
     try:
         ctx = moderngl.create_standalone_context()
-        vendor = ctx.info.get('GL_VENDOR', 'Unknown')
-        renderer = ctx.info.get('GL_RENDERER', 'Unknown')
-        version = ctx.info.get('GL_VERSION', 'Unknown')
+        # Accessing ctx.info is not required for the availability check
         ctx.release()
         return True, None
     except Exception as e:

@@ -115,18 +115,6 @@ float op_difference(float d1, float d2) {
 // Scene SDF
 // ============================================================================
 
-// Inside shell band of torus (only inner surface)
-// NOTE: This function is not currently used in the shader
-float torus_inside_shell_sdf(vec3 pos, float R, float r, float thickness) {
-    float torus_dist = torus_sdf(pos, R, r);
-    // Inside shell: torus surface moved inward by thickness
-    // We want points that are inside the torus (dist < 0) but within thickness distance
-    float shell_inner = torus_dist + thickness;
-    float shell_outer = torus_dist;
-    // Shell band is the intersection of "inside torus" and "outside inner boundary"
-    return op_difference(shell_outer, -shell_inner);
-}
-
 // Single edge as ink line on the interior surface of the torus
 // (not floating in the interior volume, but on the inside-facing surface)
 // Projects a point onto the nearest point on the inner torus shell

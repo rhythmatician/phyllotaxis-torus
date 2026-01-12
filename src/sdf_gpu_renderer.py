@@ -268,6 +268,9 @@ class SDFGPURenderer:
         if self.node_colors_buffer is not None:
             self.node_colors_buffer.release()
             self.node_colors_buffer = None
+        if self.node_radii_buffer is not None:
+            self.node_radii_buffer.release()
+            self.node_radii_buffer = None
         if self.edge_indices_buffer is not None:
             self.edge_indices_buffer.release()
             self.edge_indices_buffer = None

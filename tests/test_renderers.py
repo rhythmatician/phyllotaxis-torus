@@ -17,10 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pytest
 import json
 import numpy as np
-import torch
 import matplotlib.pyplot as plt
 from skimage.metrics import structural_similarity as ssim
-from scipy import ndimage
 
 from torus_net_gpu import (
     render_cpu,

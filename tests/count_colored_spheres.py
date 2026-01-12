@@ -9,7 +9,6 @@ Or just: python test_renderers.py
 # Add parent directory to path to import torus_net_gpu
 
 import numpy as np
-from skimage.metrics import structural_similarity as ssim
 from scipy import ndimage
 
 
@@ -37,7 +36,6 @@ def count_colored_spheres(img: np.ndarray, min_area: int = 50) -> dict:
     is_colored = np.any(img > 0.1, axis=2)  # Not pure black
     
     # Additional check: RGB channels should not all be the same (exclude gray/white)
-    r, g, b = img[:, :, 0], img[:, :, 1], img[:, :, 2]
     rgb_max = np.max(img, axis=2)
     rgb_min = np.min(img, axis=2)
     has_color_variation = (rgb_max - rgb_min) > 0.05  # Channels differ significantly
