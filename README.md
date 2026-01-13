@@ -279,12 +279,71 @@ python torus_net_gpu.py --gpu --smooth --smooth_k 0.5 --out very_smooth.png
 - **Tested on**: Intel HD Graphics 630, Mesa llvmpipe (software)
 - **Recommended**: Dedicated GPU (NVIDIA GTX/RTX, AMD Radeon, etc.)
 
+### Headless / CI/CD Setup
+
+For headless environments (CI/CD pipelines, servers without display), you need to enable software rendering with Mesa:
+
+#### Ubuntu/Debian
+
+Install EGL libraries for headless OpenGL context creation:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y libegl1 libgbm1
+```
+
+The renderer will automatically use Mesa's llvmpipe software renderer when no GPU is available.
+
+#### Verifying Installation
+
+Test that EGL backend works:
+
+```bash
+python3 -c "
+import moderngl
+ctx = moderngl.create_standalone_context(backend='egl')
+print(f'Renderer: {ctx.info.get(\"GL_RENDERER\", \"Unknown\")}')
+ctx.release()
+"
+```
+
+You should see output like:
+```
+Renderer: llvmpipe (LLVM 20.1.2, 256 bits)
+```
+
+#### Environment Variables
+
+Optionally, you can force software rendering:
+
+```bash
+# Force Mesa software rendering (useful for testing)
+export LIBGL_ALWAYS_SOFTWARE=1
+
+# For debugging OpenGL issues
+export MESA_DEBUG=1
+```
+
+#### Performance Notes
+
+Software rendering (llvmpipe) is significantly slower than GPU rendering:
+- CPU mode is usually faster than GPU mode with llvmpipe
+- GPU mode with llvmpipe: ~60–300 seconds per frame
+- CPU mode: ~10–60 seconds per frame
+
+**For headless CI/CD, we recommend CPU mode (default) for best performance.**
+
 ### Troubleshooting
 
 If GPU rendering is slow or times out:
 1. Try dots-only mode (no `--steps`)
 2. Reduce `--N` (number of points)
 3. Use CPU mode instead (omit `--gpu` flag)
+
+If you get "Failed to create OpenGL context" errors:
+1. **Headless environment**: Install EGL libraries (see Headless Setup above)
+2. **No X11 display**: Ensure `libegl1` and `libgbm1` are installed
+3. **Missing Mesa**: Install Mesa drivers: `sudo apt-get install libgl1-mesa-dri`
 
 ## Colormap Note
 
