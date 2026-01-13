@@ -11,6 +11,16 @@ layout(rgba32f, binding = 0) uniform image2D outputImage;
 
 // Input: Ink SDF texture (from Pass A)
 uniform sampler2D inkSDFTexture;
+uniform sampler2D inkColorTexture;
+uniform isampler2D seedIdTexture;
+
+layout(std430, binding = 2) buffer NodeUVBuffer {
+    vec2 nodeUV[];
+};
+
+layout(std430, binding = 3) buffer NodeRadiiBuffer {
+    float nodeRadii[];
+};
 
 // Uniforms: Scene parameters
 uniform int screenWidth;
@@ -22,6 +32,7 @@ uniform float inkSmoothness;  // Smoothness of ink edge
 uniform float hit_eps;
 uniform float t_max;
 uniform int max_steps;
+uniform int numNodes;
 
 // Uniforms: Camera
 uniform vec3 camera_pos;
@@ -37,7 +48,6 @@ uniform float specular_strength;
 uniform float shininess;
 
 // Uniforms: Colors
-uniform vec4 inkColor;         // Color for ink features
 uniform vec4 backgroundColor;  // Background color
 
 // Constants
@@ -88,14 +98,16 @@ vec2 compute_uv(vec3 p, float R) {
 
 // Convert UV from [-PI, PI] to texture coordinates [0, 1]
 vec2 uv_to_texcoord(vec2 uv) {
-    return vec2(
+    vec2 tex = vec2(
         (uv.x + PI) / TWO_PI,
         (uv.y + PI) / TWO_PI
     );
+    return fract(tex);
 }
 
 // Phong shading
 vec3 phong_shade(vec3 normal, vec3 view_dir, vec3 light_dir, vec3 base_color) {
+    light_dir = normalize(light_dir);
     // Ambient
     vec3 color = ambient * base_color;
     
@@ -103,12 +115,20 @@ vec3 phong_shade(vec3 normal, vec3 view_dir, vec3 light_dir, vec3 base_color) {
     float diff = max(dot(normal, light_dir), 0.0);
     color += diffuse_strength * diff * base_color;
     
-    // Specular (modulated by base color to avoid pure white dominating)
-    vec3 reflect_dir = reflect(-light_dir, normal);
-    float spec = pow(max(dot(view_dir, reflect_dir), 0.0), shininess);
-    color += specular_strength * spec * base_color;
+    // Specular (Blinn-Phong half-vector to match CPU)
+    vec3 half_vec = normalize(view_dir + light_dir);
+    float spec = pow(max(dot(normal, half_vec), 0.0), shininess);
+    color += specular_strength * spec * vec3(1.0);
     
     return color;
+}
+
+vec3 torus_point_from_uv(vec2 uv, float R, float r) {
+    float cu = cos(uv.x);
+    float su = sin(uv.x);
+    float cv = cos(uv.y);
+    float sv = sin(uv.y);
+    return vec3((R + r * cv) * cu, (R + r * cv) * su, r * sv);
 }
 
 // Smooth step function for ink blending
@@ -144,7 +164,7 @@ void main() {
         hit_pos = ray_origin + t * ray_dir;
         float dist = hollow_torus_sdf(hit_pos, torusR, torusr);
         
-        if (dist < hit_eps) {
+        if (abs(dist) < hit_eps) {
             hit = true;
             break;
         }
@@ -153,20 +173,8 @@ void main() {
             break;
         }
         
-        // Sphere tracing: for negative dist (inside cavity), use very small steps
-        // For positive dist (outside), use normal sphere tracing
-        float step_size;
-        if (dist < 0.0) {
-            // Inside cavity: take very small steps (linear interpolation to surface)
-            // 20% of distance to surface to be safe
-            step_size = -dist * 0.2;
-            // Clamp to reasonable bounds
-            step_size = max(step_size, 0.01);
-            step_size = min(step_size, 0.05);
-        } else {
-            // Outside cavity: use standard sphere tracing
-            step_size = dist + hit_eps * 0.1;
-        }
+        // Sphere tracing: step by absolute distance to surface
+        float step_size = max(abs(dist), hit_eps);
         t += step_size;
     }
     
@@ -184,12 +192,33 @@ void main() {
         float ink_alpha = smooth_ink_alpha(ink_sdf, inkThreshold, inkSmoothness);
         
         // If ink is present, render it with shading to match CPU
-        if (ink_alpha > 0.1) {
+        if (ink_alpha > 0.0) {
             // Compute normal for shading
             vec3 normal = estimate_normal(hit_pos, torusR, torusr);
             vec3 view_dir = normalize(camera_pos - hit_pos);
-            vec3 shaded_ink = phong_shade(normal, view_dir, light_dir, inkColor.rgb);
-            final_color = vec4(shaded_ink, 1.0);
+            ivec2 tex_size = textureSize(seedIdTexture, 0);
+            ivec2 texel = ivec2(fract(tex_coord) * vec2(tex_size));
+            int seed_id = texelFetch(seedIdTexture, texel, 0).r;
+            if (seed_id >= 0 && seed_id < numNodes) {
+                vec3 center = torus_point_from_uv(nodeUV[seed_id], torusR, torusr);
+                float radius = nodeRadii[seed_id];
+                vec3 oc = ray_origin - center;
+                float b = dot(oc, ray_dir);
+                float c = dot(oc, oc) - radius * radius;
+                float disc = b * b - c;
+                if (disc > 0.0) {
+                    float t_sphere = -b - sqrt(disc);
+                    if (t_sphere > 0.0) {
+                        vec3 hit_sphere = ray_origin + t_sphere * ray_dir;
+                        normal = normalize(hit_sphere - center);
+                        view_dir = normalize(camera_pos - hit_sphere);
+                    }
+                }
+            }
+            vec3 base_color = texture(inkColorTexture, tex_coord).rgb;
+            vec3 shaded_ink = phong_shade(normal, view_dir, light_dir, base_color);
+            vec3 blended = mix(backgroundColor.rgb, shaded_ink, ink_alpha);
+            final_color = vec4(blended, 1.0);
         } else {
             // Non-ink areas render as black
             final_color = vec4(0.0, 0.0, 0.0, 1.0);

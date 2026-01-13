@@ -8,6 +8,7 @@ This approach scales O(pixels) instead of O(pixels × primitives), enabling
 rendering of thousands of nodes/edges efficiently.
 """
 
+import os
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple
@@ -38,7 +39,7 @@ class UVGPURenderer:
         self.ctx: moderngl.Context
         # Create OpenGL context (standalone for headless rendering)
         try:
-            self.ctx = moderngl.create_standalone_context()
+            self.ctx = self._create_context()
         except Exception as e:
             raise RuntimeError(f"Failed to create OpenGL context: {e}")
 
@@ -72,6 +73,13 @@ class UVGPURenderer:
         self.ink_sdf_texture.repeat_x = True
         self.ink_sdf_texture.repeat_y = True
 
+        # Create UV ink color texture (RGBA32F)
+        self.ink_color_texture: moderngl.Texture = self.ctx.texture(
+            (uv_texture_size, uv_texture_size), components=4, dtype="f4"
+        )
+        self.ink_color_texture.repeat_x = True
+        self.ink_color_texture.repeat_y = True
+
         # Create output image texture (RGBA32F)
         self.output_texture: moderngl.Texture = self.ctx.texture(
             (width, height), components=4, dtype="f4"
@@ -82,6 +90,7 @@ class UVGPURenderer:
         self.node_radii_buffer: Optional[moderngl.Buffer] = None
         self.edge_uv_buffer: Optional[moderngl.Buffer] = None
         self.edge_radii_buffer: Optional[moderngl.Buffer] = None
+        self.node_color_buffer: Optional[moderngl.Buffer] = None
         self.output_buffer: Optional[moderngl.Buffer] = None
         # Current scene parameters
         self.num_nodes = 0
@@ -95,6 +104,30 @@ class UVGPURenderer:
             "version": self.ctx.info.get("GL_VERSION", "Unknown"),
             "glsl_version": self.ctx.info.get("GL_SHADING_LANGUAGE_VERSION", "Unknown"),
         }
+
+    @staticmethod
+    def _create_context() -> moderngl.Context:
+        """Create a standalone context with a fallback to software backends."""
+        backend_env = os.environ.get("MGL_BACKEND")
+
+        backends = [backend_env] if backend_env else []
+        backends.extend(["egl", "osmesa"])
+
+        last_error: Optional[Exception] = None
+        for backend in backends:
+            try:
+                return moderngl.create_standalone_context(backend=backend)
+            except Exception as e:
+                last_error = e
+
+        try:
+            return moderngl.create_standalone_context()
+        except Exception as e:
+            last_error = e
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("Failed to create OpenGL context")
 
     def _compile_shader(self, shader_name: str) -> moderngl.ComputeShader:
         """Load and compile a compute shader."""
@@ -138,6 +171,7 @@ class UVGPURenderer:
         shininess: float,
         ink_color: np.ndarray,  # [4] - RGBA
         background_color: np.ndarray,  # [4] - RGBA
+        node_colors: Optional[np.ndarray] = None,  # [N, 3] - RGB per-node colors
     ):
         """
         Upload scene data to GPU and set uniforms.
@@ -201,6 +235,20 @@ class UVGPURenderer:
             output_size = self.width * self.height * 4 * 4  # RGBA float32
             self.output_buffer = self.ctx.buffer(reserve=output_size)
 
+        if node_colors is not None:
+            node_colors = np.ascontiguousarray(node_colors, dtype=np.float32)
+            if node_colors.shape != (self.num_nodes, 3):
+                raise ValueError("node_colors must have shape (num_nodes, 3)")
+            if (
+                self.node_color_buffer is None
+                or self.node_color_buffer.size != node_colors.nbytes
+            ):
+                if self.node_color_buffer is not None:
+                    self.node_color_buffer.release()
+                self.node_color_buffer = self.ctx.buffer(node_colors.tobytes())
+            else:
+                self.node_color_buffer.write(node_colors.tobytes())
+
         # Set uniforms for Pass A - Stage 1 (seed)
         self.ink_seed_program["numNodes"] = self.num_nodes
         self.ink_seed_program["numEdges"] = self.num_edges
@@ -210,6 +258,10 @@ class UVGPURenderer:
         self.ink_seed_program["torusr"] = torus_r
 
         # Set uniforms for Pass A - Stage 2 (JFA)
+        self.ink_jfa_program["numNodes"] = self.num_nodes
+        self.ink_jfa_program["numEdges"] = self.num_edges
+        self.ink_jfa_program["torusR"] = torus_R
+        self.ink_jfa_program["torusr"] = torus_r
         self.ink_jfa_program["texWidth"] = self.uv_texture_size
         self.ink_jfa_program["texHeight"] = self.uv_texture_size
 
@@ -230,6 +282,7 @@ class UVGPURenderer:
         self.raymarch_program["hit_eps"] = hit_eps
         self.raymarch_program["t_max"] = t_max
         self.raymarch_program["max_steps"] = max_steps
+        self.raymarch_program["numNodes"] = self.num_nodes
 
         # Camera
         self.raymarch_program["camera_pos"] = tuple(camera_pos.astype(np.float32))
@@ -247,7 +300,6 @@ class UVGPURenderer:
         self.raymarch_program["shininess"] = shininess
 
         # Colors
-        self.raymarch_program["inkColor"] = tuple(ink_color.astype(np.float32))
         self.raymarch_program["backgroundColor"] = tuple(
             background_color.astype(np.float32)
         )
@@ -256,6 +308,8 @@ class UVGPURenderer:
         self.raymarch_program["inkSDFTexture"] = (
             0  # Matches use(location=0) in render()
         )
+        self.raymarch_program["inkColorTexture"] = 1
+        self.raymarch_program["seedIdTexture"] = 2
 
     def render(self) -> np.ndarray:
         """
@@ -325,6 +379,10 @@ class UVGPURenderer:
             # Bind textures
             read_texture.bind_to_image(0, read=True, write=False)
             write_texture.bind_to_image(1, read=False, write=True)
+            self.node_uv_buffer.bind_to_storage_buffer(2)
+            self.node_radii_buffer.bind_to_storage_buffer(3)
+            self.edge_uv_buffer.bind_to_storage_buffer(4)
+            self.edge_radii_buffer.bind_to_storage_buffer(5)
 
             # Dispatch JFA pass
             self.ink_jfa_program.run(groups_x, groups_y, 1)
@@ -343,15 +401,18 @@ class UVGPURenderer:
 
         # ===== PASS A - STAGE 3: Finalize SDF =====
 
-        # Bind seed texture (input) and SDF texture (output)
+        # Bind seed texture (input) and SDF/color textures (output)
         final_seed_texture.bind_to_image(0, read=True, write=False)
         self.ink_sdf_texture.bind_to_image(1, read=False, write=True)
+        self.ink_color_texture.bind_to_image(2, read=False, write=True)
 
         # Bind geometry buffers
         self.node_uv_buffer.bind_to_storage_buffer(2)
         self.node_radii_buffer.bind_to_storage_buffer(3)
         self.edge_uv_buffer.bind_to_storage_buffer(4)
         self.edge_radii_buffer.bind_to_storage_buffer(5)
+        if self.node_color_buffer is not None:
+            self.node_color_buffer.bind_to_storage_buffer(6)
 
         # Dispatch finalize stage
         self.ink_finalize_program.run(groups_x, groups_y, 1)
@@ -389,8 +450,14 @@ class UVGPURenderer:
 
         # ===== PASS B: Ray march torus + sample ink texture =====
 
-        # Bind ink SDF texture as input (sampler)
+        # Bind ink SDF/color textures and seed IDs as input (samplers)
         self.ink_sdf_texture.use(location=0)
+        self.ink_color_texture.use(location=1)
+        final_seed_texture.use(location=2)
+
+        # Bind node data for shading
+        self.node_uv_buffer.bind_to_storage_buffer(2)
+        self.node_radii_buffer.bind_to_storage_buffer(3)
 
         # Bind output texture
         self.output_texture.bind_to_image(0, read=False, write=True)
@@ -439,6 +506,10 @@ class UVGPURenderer:
             self.output_buffer.release()
             del self.output_buffer
 
+        if self.node_color_buffer is not None:
+            self.node_color_buffer.release()
+            del self.node_color_buffer
+
         # Release textures (even if ctx fails)
         try:
             if self.seed_texture_a is not None:
@@ -462,11 +533,19 @@ class UVGPURenderer:
             del self.ink_sdf_texture
 
         try:
+            if self.ink_color_texture is not None:
+                self.ink_color_texture.release()
+                del self.ink_color_texture
+        except Exception:
+            del self.ink_color_texture
+
+        try:
             if self.output_texture is not None:
                 self.output_texture.release()
                 del self.output_texture
         except Exception:
             del self.output_texture
+
 
         # Release context
         if self.ctx is not None:
@@ -485,7 +564,7 @@ def test_uv_gpu_availability() -> Tuple[bool, Optional[str]]:
         (available, error_message): If available is False, error_message explains why
     """
     try:
-        ctx = moderngl.create_standalone_context()
+        ctx = UVGPURenderer._create_context()
         # Accessing ctx.info is not required for the availability check
         ctx.release()
         return True, None

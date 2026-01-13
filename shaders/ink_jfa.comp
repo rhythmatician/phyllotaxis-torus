@@ -10,13 +10,115 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(r32i, binding = 0) uniform iimage2D seedTextureRead;
 layout(r32i, binding = 1) uniform iimage2D seedTextureWrite;
 
+// Input: Node data (dots)
+layout(std430, binding = 2) buffer NodeUVBuffer {
+    vec2 nodeUV[];
+};
+
+layout(std430, binding = 3) buffer NodeRadiiBuffer {
+    float nodeRadii[];
+};
+
+// Input: Edge data (lines)
+layout(std430, binding = 4) buffer EdgeUVBuffer {
+    vec4 edgeUV[];
+};
+
+layout(std430, binding = 5) buffer EdgeRadiiBuffer {
+    float edgeRadii[];
+};
+
 // Uniforms
+uniform int numNodes;
+uniform int numEdges;
 uniform int texWidth;
 uniform int texHeight;
 uniform int jumpStep;  // Current jump distance (decreases each pass)
+uniform float torusR;
+uniform float torusr;
 
 // Constants
+const float PI = 3.14159265359;
+const float TWO_PI = 6.28318530718;
 const int SEED_NONE = -1;
+
+// Wrap angle difference to [-PI, PI]
+float wrap_angle_diff(float a, float b) {
+    float diff = a - b;
+    while (diff > PI) diff -= TWO_PI;
+    while (diff < -PI) diff += TWO_PI;
+    return diff;
+}
+
+// Compute distance on torus surface using metric at query point
+float torus_surface_distance(vec2 uv1, vec2 uv2, float query_v, float R, float r) {
+    float du = wrap_angle_diff(uv2.x, uv1.x);
+    float dv = wrap_angle_diff(uv2.y, uv1.y);
+    
+    // Use metric at query point for consistency
+    float metric_uu = (R + r * cos(query_v)) * (R + r * cos(query_v));
+    float metric_vv = r * r;
+    
+    return sqrt(metric_uu * du * du + metric_vv * dv * dv);
+}
+
+// Distance from query_uv to a dot
+float distance_to_dot(vec2 query_uv, int node_idx, float R, float r) {
+    vec2 dot_uv = nodeUV[node_idx];
+    float radius = nodeRadii[node_idx];
+    float dist = torus_surface_distance(query_uv, dot_uv, query_uv.y, R, r);
+    return dist - radius;
+}
+
+// Distance from query_uv to an edge (with consistent metric)
+float distance_to_edge(vec2 query_uv, int edge_idx, float R, float r) {
+    vec2 uv0 = edgeUV[edge_idx].xy;
+    vec2 uv1 = edgeUV[edge_idx].zw;
+    float radius = edgeRadii[edge_idx];
+    
+    // Wrap edge to shortest path
+    float du_edge = wrap_angle_diff(uv1.x, uv0.x);
+    float dv_edge = wrap_angle_diff(uv1.y, uv0.y);
+    
+    // Query relative to uv0
+    float du_query = wrap_angle_diff(query_uv.x, uv0.x);
+    float dv_query = wrap_angle_diff(query_uv.y, uv0.y);
+    
+    // Metric at query point (consistent throughout)
+    float query_v = query_uv.y;
+    float metric_uu = (R + r * cos(query_v)) * (R + r * cos(query_v));
+    float metric_vv = r * r;
+    
+    // Project onto edge using query metric
+    float dot_query_edge = metric_uu * du_query * du_edge + metric_vv * dv_query * dv_edge;
+    float dot_edge_edge = metric_uu * du_edge * du_edge + metric_vv * dv_edge * dv_edge;
+    
+    float t = clamp(dot_query_edge / max(dot_edge_edge, 1e-8), 0.0, 1.0);
+    
+    // Closest point on segment
+    vec2 closest_uv = vec2(
+        uv0.x + t * du_edge,
+        uv0.y + t * dv_edge
+    );
+    
+    // Distance using query metric
+    float dist = torus_surface_distance(query_uv, closest_uv, query_v, R, r);
+    return dist - radius;
+}
+
+float distance_to_seed(vec2 query_uv, int seed_id) {
+    if (seed_id == SEED_NONE) {
+        return 1e10;
+    }
+    if (seed_id < numNodes) {
+        return distance_to_dot(query_uv, seed_id, torusR, torusr);
+    }
+    int edge_idx = seed_id - numNodes;
+    if (edge_idx < 0 || edge_idx >= numEdges) {
+        return 1e10;
+    }
+    return distance_to_edge(query_uv, edge_idx, torusR, torusr);
+}
 
 void main() {
     ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
@@ -25,10 +127,15 @@ void main() {
         return;
     }
     
-    // Read current seed
+    // Convert texel to UV coordinates
+    float u = (float(texel.x) / float(texWidth)) * TWO_PI - PI;
+    float v = (float(texel.y) / float(texHeight)) * TWO_PI - PI;
+    vec2 query_uv = vec2(u, v);
+    
+    // Read current seed and compute its distance
     int current_seed = imageLoad(seedTextureRead, texel).r;
     int best_seed = current_seed;
-    float best_dist_sq = (current_seed == SEED_NONE) ? 1e10 : 0.0;
+    float best_dist = distance_to_seed(query_uv, current_seed);
     
     // Check 9 neighbors at current jump distance
     for (int dy = -1; dy <= 1; dy++) {
@@ -40,25 +147,10 @@ void main() {
             
             int neighbor_seed = imageLoad(seedTextureRead, neighbor).r;
             
-            if (neighbor_seed != SEED_NONE) {
-                // Compute distance-squared from this texel to neighbor
-                // (Approximate - actual seed position unknown at this stage)
-                ivec2 delta = neighbor - texel;
-                
-                // Handle wrapping for distance calculation
-                if (abs(delta.x) > texWidth / 2) {
-                    delta.x = delta.x > 0 ? delta.x - texWidth : delta.x + texWidth;
-                }
-                if (abs(delta.y) > texHeight / 2) {
-                    delta.y = delta.y > 0 ? delta.y - texHeight : delta.y + texHeight;
-                }
-                
-                float dist_sq = float(delta.x * delta.x + delta.y * delta.y);
-                
-                if (dist_sq < best_dist_sq) {
-                    best_dist_sq = dist_sq;
-                    best_seed = neighbor_seed;
-                }
+            float dist = distance_to_seed(query_uv, neighbor_seed);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_seed = neighbor_seed;
             }
         }
     }
