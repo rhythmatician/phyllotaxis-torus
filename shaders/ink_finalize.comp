@@ -11,6 +11,8 @@ layout(r32i, binding = 0) uniform iimage2D seedTexture;
 
 // Output: Final ink SDF texture
 layout(r32f, binding = 1) uniform image2D inkSDFTexture;
+// Output: Final ink color texture
+layout(rgba32f, binding = 2) uniform image2D inkColorTexture;
 
 // Input: Node data (dots)
 layout(std430, binding = 2) buffer NodeUVBuffer {
@@ -28,6 +30,11 @@ layout(std430, binding = 4) buffer EdgeUVBuffer {
 
 layout(std430, binding = 5) buffer EdgeRadiiBuffer {
     float edgeRadii[];
+};
+
+// Input: Node colors (RGB)
+layout(std430, binding = 6) buffer NodeColorBuffer {
+    vec3 nodeColors[];
 };
 
 // Uniforms
@@ -135,13 +142,20 @@ void main() {
     if (seed_id == SEED_NONE) {
         // No nearby primitives
         sdf = 1e10;
+        imageStore(inkColorTexture, texel, vec4(0.0, 0.0, 0.0, 1.0));
     } else if (seed_id < numNodes) {
         // Seed is a node (dot)
         sdf = distance_to_dot(query_uv, seed_id, torusR, torusr);
+        imageStore(
+            inkColorTexture,
+            texel,
+            vec4(nodeColors[seed_id], 1.0)
+        );
     } else {
         // Seed is an edge
         int edge_idx = seed_id - numNodes;
         sdf = distance_to_edge(query_uv, edge_idx, torusR, torusr);
+        imageStore(inkColorTexture, texel, vec4(1.0, 1.0, 1.0, 1.0));
     }
     
     // Optional: Apply smooth minimum with neighboring primitives

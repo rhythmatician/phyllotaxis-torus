@@ -55,8 +55,9 @@ float radius_world_to_texels(vec2 uv_center, float radius_world) {
     float texel_size = TWO_PI / float(texWidth);  // Assume square texels
     
     // Convert world radius to angular extent in radians.
-    // Use v_scale (the minor radius) since the sphere projects more strongly in that direction
-    float radius_angular = radius_world / max(v_scale, 1e-6);
+    // Use the tighter metric scale so dots remain visible across the torus.
+    float metric_scale = min(u_scale, v_scale);
+    float radius_angular = radius_world / max(metric_scale, 1e-6);
     float r_texels = radius_angular / texel_size;
     
     return r_texels;
@@ -179,21 +180,12 @@ void main() {
     
     // Initialize: each thread handles one node and one edge
     int thread_id = int(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * gl_NumWorkGroups.x * 8);
-    
-    // Clear texel initially
-    if (texel.x < texWidth && texel.y < texHeight) {
-        imageStore(seedTexture, texel, ivec4(SEED_NONE, 0, 0, 0));
-    }
-    
-    barrier();
-    
+
     // Rasterize dots (one per thread)
     if (thread_id < numNodes) {
         rasterize_dot(thread_id);
     }
-    
-    barrier();
-    
+
     // Rasterize edges (one per thread)
     if (thread_id < numEdges) {
         rasterize_edge(thread_id);

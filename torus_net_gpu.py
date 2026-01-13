@@ -732,8 +732,13 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
     u, v = torus_phyllotaxis_uv(scene.N, scene.R, scene.r_inner, device)
     P = torus_point_from_uv(u, v, scene.R, scene.r_inner)
 
-    # Convert u, v to numpy in [-PI, PI] range (they already are)
-    node_uv_np = torch.stack([u, v], dim=-1).numpy()  # [N, 2]
+    # Convert u, v to numpy in [-PI, PI] range for GPU UV shaders
+    u_np = u.detach().cpu().numpy()
+    v_np = v.detach().cpu().numpy()
+    two_pi = 2.0 * np.pi
+    u_wrapped = (u_np + np.pi) % two_pi - np.pi
+    v_wrapped = (v_np + np.pi) % two_pi - np.pi
+    node_uv_np = np.stack([u_wrapped, v_wrapped], axis=-1).astype(np.float32)
 
     # Build edge list
     edges = []
@@ -805,11 +810,11 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
 
     # Ink threshold: SDF < threshold means "inside ink"
     # With smooth blending, the ink alpha will transition smoothly around threshold
-    ink_threshold = 0.038  # Fine-tuned to match CPU dot size exactly
-    ink_smoothness = smooth_k * 0.22  # Fine-tuned smoothness
+    ink_threshold = 0.0415  # Fine-tuned to match CPU dot size exactly
+    ink_smoothness = 0.0  # Match CPU hard-edged sphere splats
 
     # Colors
-    # Match CPU yellow-ish dot coloring so tests detect non-gray blobs
+    # Fallback ink color (used if LUT is unavailable)
     ink_color = np.array([0.95, 0.85, 0.2, 1.0], dtype=np.float32)
     torus_color = np.array(
         [0.15, 0.15, 0.15, 1.0], dtype=np.float32
@@ -817,6 +822,14 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
     background_color = np.array(
         [0.0, 0.0, 0.0, 1.0], dtype=np.float32
     )  # Black background
+    cmap = plt.get_cmap(scene.cmap_name)
+    color_lut = np.asarray(
+        [cmap(i / 255.0)[:3] for i in range(256)], dtype=np.float32
+    )
+    t_raw = (v_np % two_pi) / two_pi
+    t_pp = 1.0 - np.abs(2.0 * t_raw - 1.0)
+    color_idx = np.clip((t_pp * 255.0).astype(np.int32), 0, 255)
+    node_colors = color_lut[color_idx]
 
     # Upload scene to GPU
     print(f"[UV-GPU] Uploading {len(node_uv_np)} nodes and {len(edges)} edges...")
@@ -838,6 +851,7 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
             max_steps=min(
                 scene.max_steps, 200
             ),  # Fewer steps needed for single primitive
+            camera_f=scene.f,
             camera_pos=cam_np,
             camera_right=right_np,
             camera_up=up_np,
@@ -849,6 +863,7 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
             shininess=scene.shininess,
             ink_color=ink_color,
             background_color=background_color,
+            node_colors=node_colors,
         )
 
         # Render (Pass A + Pass B)
