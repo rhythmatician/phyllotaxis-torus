@@ -160,6 +160,7 @@ class UVGPURenderer:
         hit_eps: float,
         t_max: float,
         max_steps: int,
+        camera_f: float,
         camera_pos: np.ndarray,
         camera_right: np.ndarray,
         camera_up: np.ndarray,
@@ -283,6 +284,7 @@ class UVGPURenderer:
         self.raymarch_program["t_max"] = t_max
         self.raymarch_program["max_steps"] = max_steps
         self.raymarch_program["numNodes"] = self.num_nodes
+        self.raymarch_program["camera_f"] = camera_f
 
         # Camera
         self.raymarch_program["camera_pos"] = tuple(camera_pos.astype(np.float32))

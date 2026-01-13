@@ -810,8 +810,8 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
 
     # Ink threshold: SDF < threshold means "inside ink"
     # With smooth blending, the ink alpha will transition smoothly around threshold
-    ink_threshold = 0.05  # Fine-tuned to match CPU dot size exactly
-    ink_smoothness = smooth_k * 0.4  # Fine-tuned smoothness
+    ink_threshold = 0.0415  # Fine-tuned to match CPU dot size exactly
+    ink_smoothness = 0.0  # Match CPU hard-edged sphere splats
 
     # Colors
     # Fallback ink color (used if LUT is unavailable)
@@ -851,6 +851,7 @@ def render_uv_gpu(scene: Scene, steps: list[int], out_path: str):
             max_steps=min(
                 scene.max_steps, 200
             ),  # Fewer steps needed for single primitive
+            camera_f=scene.f,
             camera_pos=cam_np,
             camera_right=right_np,
             camera_up=up_np,

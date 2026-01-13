@@ -33,6 +33,7 @@ uniform float hit_eps;
 uniform float t_max;
 uniform int max_steps;
 uniform int numNodes;
+uniform float camera_f;
 
 // Uniforms: Camera
 uniform vec3 camera_pos;
@@ -149,8 +150,10 @@ void main() {
     
     // Compute ray direction
     float aspect = float(screenWidth) / float(screenHeight);
-    float u = (2.0 * float(pixel.x) / float(screenWidth) - 1.0) * aspect;
-    float v = 1.0 - 2.0 * float(pixel.y) / float(screenHeight);
+    float u = (2.0 * float(pixel.x) / float(screenWidth - 1) - 1.0) * aspect;
+    float v = 1.0 - 2.0 * float(pixel.y) / float(screenHeight - 1);
+    u /= camera_f;
+    v /= camera_f;
     
     vec3 ray_origin = camera_pos;
     vec3 ray_dir = normalize(camera_forward + u * camera_right + v * camera_up);
@@ -165,6 +168,8 @@ void main() {
         float dist = hollow_torus_sdf(hit_pos, torusR, torusr);
         
         if (abs(dist) < hit_eps) {
+            t -= dist;
+            hit_pos = ray_origin + t * ray_dir;
             hit = true;
             break;
         }
@@ -190,30 +195,37 @@ void main() {
         
         // Compute ink alpha based on SDF value
         float ink_alpha = smooth_ink_alpha(ink_sdf, inkThreshold, inkSmoothness);
+        ivec2 tex_size = textureSize(seedIdTexture, 0);
+        ivec2 texel = ivec2(fract(tex_coord) * vec2(tex_size));
+        int seed_id = texelFetch(seedIdTexture, texel, 0).r;
+        bool has_sphere_hit = false;
+        vec3 hit_sphere = hit_pos;
+        if (seed_id >= 0 && seed_id < numNodes) {
+            vec3 center = torus_point_from_uv(nodeUV[seed_id], torusR, torusr);
+            float radius = nodeRadii[seed_id];
+            vec3 oc = ray_origin - center;
+            float b = dot(oc, ray_dir);
+            float c = dot(oc, oc) - radius * radius;
+            float disc = b * b - c;
+            if (disc > 0.0) {
+                float t_sphere = -b - sqrt(disc);
+                if (t_sphere > 0.0) {
+                    hit_sphere = ray_origin + t_sphere * ray_dir;
+                    has_sphere_hit = true;
+                    ink_alpha = 1.0;
+                }
+            }
+        }
         
         // If ink is present, render it with shading to match CPU
         if (ink_alpha > 0.0) {
             // Compute normal for shading
             vec3 normal = estimate_normal(hit_pos, torusR, torusr);
             vec3 view_dir = normalize(camera_pos - hit_pos);
-            ivec2 tex_size = textureSize(seedIdTexture, 0);
-            ivec2 texel = ivec2(fract(tex_coord) * vec2(tex_size));
-            int seed_id = texelFetch(seedIdTexture, texel, 0).r;
-            if (seed_id >= 0 && seed_id < numNodes) {
+            if (has_sphere_hit && seed_id >= 0 && seed_id < numNodes) {
                 vec3 center = torus_point_from_uv(nodeUV[seed_id], torusR, torusr);
-                float radius = nodeRadii[seed_id];
-                vec3 oc = ray_origin - center;
-                float b = dot(oc, ray_dir);
-                float c = dot(oc, oc) - radius * radius;
-                float disc = b * b - c;
-                if (disc > 0.0) {
-                    float t_sphere = -b - sqrt(disc);
-                    if (t_sphere > 0.0) {
-                        vec3 hit_sphere = ray_origin + t_sphere * ray_dir;
-                        normal = normalize(hit_sphere - center);
-                        view_dir = normalize(camera_pos - hit_sphere);
-                    }
-                }
+                normal = normalize(hit_sphere - center);
+                view_dir = normalize(camera_pos - hit_sphere);
             }
             vec3 base_color = texture(inkColorTexture, tex_coord).rgb;
             vec3 shaded_ink = phong_shade(normal, view_dir, light_dir, base_color);
